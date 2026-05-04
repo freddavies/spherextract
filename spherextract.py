@@ -546,8 +546,9 @@ def optimal_extract(fits_path, name, ra, dec, extract_size = (21, 21), fit_radiu
         elif save_figs and results_dir:
             figs_dir = os.path.join(results_dir, f"{name}_figs")
             Path(figs_dir).mkdir(parents=True, exist_ok=True)
-            obs = hdr.get("OBSID", "obs") if "hdr" in dir() else "obs"
-            fig.savefig(Path(figs_dir) / f"{name}_{obs}_{stub}.png", dpi=130)
+            obs = hdr["OBSID"]
+            det = hdr["DETECTOR"]
+            fig.savefig(Path(figs_dir) / f"{name}_{obs}D{det}_{stub}.png", dpi=130)
         plt.close(fig)
 
     def _nan_result(**overrides):
