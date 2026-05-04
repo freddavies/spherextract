@@ -12,7 +12,7 @@ Two scripts are provided:
 # Examples
 
 - ```
-  python spherextract.py --ra 129.1827 --dec 0.914806 --name J0836p0054 \\
+  python spherextract.py --ra 129.1827 --dec 0.914806 --name J0836p0054 \
       --results-dir results_J0836p0054/ --save-figs
   ```
 
@@ -20,8 +20,8 @@ Download the cutouts for the quasar SDSS J0836+0054 to the default directory `sp
 
 
 - ```
-  python spherextract_two.py --ra1 202.5219167 --dec1 -9.0843944 --name1 J1330_QSO \\
-    --ra2 202.52297676 --dec2 -9.086666152 --name2 J1330_STAR \\
+  python spherextract_two.py --ra1 202.5219167 --dec1 -9.0843944 --name1 J1330_QSO \
+    --ra2 202.52297676 --dec2 -9.086666152 --name2 J1330_STAR \
     --results-dir results_J1330m0905/ --download --kappa 25 --save-figs
   ```
 
