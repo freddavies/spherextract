@@ -75,7 +75,7 @@ import astropy.units as u
 # ---------------------------------------------------------------------------
 # Re-use helpers from the single-source script
 # ---------------------------------------------------------------------------
-from spxtract import (
+from spherextract import (
     _BAD_BITS,
     _BAD_BITS_BCG,
     _build_cutout_url,
