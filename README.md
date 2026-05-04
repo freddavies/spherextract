@@ -13,7 +13,7 @@ Two scripts are provided:
 
 - ```
   python spherextract.py --ra 129.1827 --dec 0.914806 --name J0836p0054 \\
-      --results-dir results_J0836p0054/ --save-figs`
+      --results-dir results_J0836p0054/ --save-figs
   ```
 
 Download the cutouts for the quasar SDSS J0836+0054 to the default directory `spherex_cutouts/J0836p0054/`, and save the resulting single-object extractions to `results_J0836p0054/`. Diagnostic figures for the extraction from each spectral image will be saved to `results_J0836p0054/J0836p0054_figs/`.
