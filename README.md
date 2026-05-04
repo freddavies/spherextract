@@ -7,6 +7,8 @@ Two scripts are provided:
 - `spherextract.py`, a standalone single-object tool
 - `spherextract_two.py`, which attempts to deblend two nearby sources
 
+The combined spectrum is written out in a results directory both as a csv file with all the associated metadata, and as a text file with only the wavelength, flux, and error columns.
+
 *Highly experimental, use at your own risk!*
 
 # Examples
