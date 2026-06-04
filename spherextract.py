@@ -301,6 +301,13 @@ def download_cutouts(name, ra, dec, output_dir, search_radius_arcsec = 3.0,
 
     return local_paths
 
+def cleanup_cutouts(fits_paths):
+    """
+    Delete cutouts for the current target to save space
+    """
+    for path in fits_paths:
+        os.system(f'rm {path}')
+
 # ---------------------------------------------------------------------------
 # Helpers: spectral WCS (lookup-table interpolation)
 # ---------------------------------------------------------------------------
@@ -1073,6 +1080,9 @@ def _build_parser():
                    help="Cutout size in degrees (default: 0.01 = 36 arcsec)")
     p.add_argument("--overwrite", action="store_true",
                    help="Re-download existing cutout files")
+    # Need to make sure *finished* targets are not re-done on next launch!
+    p.add_argument("--cleanup", action="store_true",
+                   help="Delete cutout files after completion")
 
     # Extraction options
     p.add_argument("--fit-radius", type=float, default=4.0, metavar="PX",
@@ -1179,20 +1189,25 @@ def main(argv=None):
                 fits_paths = sorted(glob.glob(os.path.join(args.fits_dir, name, "*.fits")))
             print(f"  [skip-download] Found {len(fits_paths)} local file(s).")
         else:
-            fits_paths = download_cutouts(
-                name=name,
-                ra=ra,
-                dec=dec,
-                output_dir=args.fits_dir,
-                search_radius_arcsec=args.search_radius,
-                cutout_size_deg=args.cutout_size,
-                overwrite=args.overwrite,
-            )
+            csv_path = os.path.join(args.results_dir, f"{name}_spherex_photometry.csv")
+            if len(targets) > 1 and os.path.isfile(csv_path):
+                print(f"  Already extracted this object, skipping to the next one.")
+                continue
+            else:
+                fits_paths = download_cutouts(
+                    name=name,
+                    ra=ra,
+                    dec=dec,
+                    output_dir=args.fits_dir,
+                    search_radius_arcsec=args.search_radius,
+                    cutout_size_deg=args.cutout_size,
+                    overwrite=args.overwrite,
+                )
 
         if not fits_paths:
             print(f"  No FITS files available for {name}; skipping extraction.")
             continue
-
+            
         # ------------------------------------------------------------------
         # Step 2: optimal extraction from each cutout
         # ------------------------------------------------------------------
@@ -1236,6 +1251,8 @@ def main(argv=None):
             _results_to_csv(all_results, csv_path)
             txt_path = os.path.join(args.results_dir, f"{name}_spherex_spectrum.txt")
             _spec_to_txt(all_results, txt_path)
+            if args.cleanup:
+                cleanup_cutouts(fits_paths)
         else:
             print("  No results to write.")
 
