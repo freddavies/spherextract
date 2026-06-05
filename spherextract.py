@@ -166,18 +166,21 @@ def _build_cutout_url(access_url, ra, dec, cutout_size_deg):
         f"&size={cutout_size_deg}&path={data_path}"
     )
 
-def _download_file(url, out_path, max_retries = 10, retry_delay = 2.0):
+def _download_file(url, out_path, max_retries = 10, retry_delay = 2.0, timeout = 15.0):
     """
     Download *url* to *out_path*. Returns True on success.
 
     On failure the download is retried up to *max_retries* times, with a
     pause of *retry_delay* seconds between attempts.
+    
+    If download takes longer than *timeout* seconds to complete, count this
+    as a failure and try again, it was probably stuck.
     """
     import time
 
     for attempt in range(1, max_retries + 1):
         try:
-            response = urlopen(url)
+            response = urlopen(url,timeout=timeout)
             data = response.read()
 
             if len(data) < 100:
