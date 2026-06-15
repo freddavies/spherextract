@@ -712,6 +712,15 @@ def optimal_extract(fits_path, name, ra, dec, extract_size = (21, 21), fit_radiu
         bkg = float(np.median(data_raw[good_any])) if np.any(good_any) else 0.0
         bkg_npix = int(np.sum(good_any))
         dprint("  [WARN] Few good BCG pixels; using unmasked background estimate.")
+        
+    # Can do better than a simple median background.
+    # Generically, there can be background features which follow the spectral direction,
+    # e.g. sky emission lines or undercorrected dichroic effects etc.
+    # So in some cases it may be preferable to construct a background model
+    # which is some function of
+    #linear_bcg = True
+    #if linear_bcg:
+        
 
     data = data_raw - bkg
     dprint(f"  Background: {bkg:.4g} MJy/sr (from {bkg_npix} pixels)")
@@ -1083,9 +1092,10 @@ def _build_parser():
                    help="Cutout size in degrees (default: 0.01 = 36 arcsec)")
     p.add_argument("--overwrite", action="store_true",
                    help="Re-download existing cutout files")
-    # Need to make sure *finished* targets are not re-done on next launch!
     p.add_argument("--cleanup", action="store_true",
                    help="Delete cutout files after completion")
+    p.add_argument("--dl-threads", type=int, default=8,
+                   help="Number of simultaneous downloads (default = 8)")
 
     # Extraction options
     p.add_argument("--fit-radius", type=float, default=4.0, metavar="PX",
@@ -1205,6 +1215,7 @@ def main(argv=None):
                     search_radius_arcsec=args.search_radius,
                     cutout_size_deg=args.cutout_size,
                     overwrite=args.overwrite,
+                    max_workers = args.dl_threads
                 )
 
         if not fits_paths:
