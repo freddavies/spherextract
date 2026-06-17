@@ -6,6 +6,7 @@ AI-aided synthesis of the cutout download machinery from Eduardo Bañados' [sphe
 Two scripts are provided: 
 - `spherextract.py`, a standalone single-object tool
 - `spherextract_two.py`, which attempts to deblend two nearby sources
+- `spherextract_three.py`, which attempts to deblend three nearby sources
 
 The combined spectrum is written out in a results directory both as a csv file with all the associated metadata, and as a text file with only the wavelength, flux, and error columns.
 
@@ -29,6 +30,7 @@ Download the cutouts for the quasar SDSS J0836+0054 to the default directory `sp
 
 Download the cutouts for the lensed quasar J1330-0905 to the default directory `spherex_cutouts/J1330_QSO/`, save the resulting two-object extractions to `results_J1330m0905/`, and save diagnostic plots to `results_J1330m0905/J1330_QSO_figs/`. This close blend (~10 arcsec) is tricky because both objects are fairly bright; this means that the default outlier rejection (kappa = 4) is too aggressive, and masks most of the useful pixels.
 
+The `spherextract_three.py` tool has a similar syntax, but with an additional ra3, dec3, name3.
 
 There are many other command line options, run either script with `-h` to take a look.
 
@@ -38,4 +40,4 @@ There are many other command line options, run either script with `-h` to take a
 
 - The single-object tool assumes a point-source morphology for the target. Extended sources may be supported in the future.
 
-- Support for more than two objects will be implemented in the future using a straightforward extrapolation of the least-squares method in the two-object tool. I just have to come up with a reasonable data model, it is kind of a pain.
+- Support for more than three objects will be implemented in the future using a straightforward extrapolation of the least-squares method in the two- and three-object tools. I just have to come up with a reasonable data model, it is kind of a pain.
