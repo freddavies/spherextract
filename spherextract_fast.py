@@ -31,9 +31,6 @@ python spherextract.py --ra 129.1827 --dec 0.914806 --name J0836p0054
 # Read targets from file (name ra dec columns):
 python spherextract.py --input targets.txt
 
-# Skip download if cutouts already exist:
-python spherextract.py --input targets.txt --fits-dir my_cutouts/ --skip-download
-
 # Save results to specific directory:
 python spherextract.py --input targets.txt --results-dir my_results/
 
@@ -41,7 +38,7 @@ python spherextract.py --input targets.txt --results-dir my_results/
 python spherextract.py --ra 129.1827 --dec 0.914806 \\
     --name J0836p0054 --fit-radius 4.0 --kappa 4.0 --max-iter 10 \\
     --cutout-size 0.1 --search-radius 5 \\
-    --fits-dir cutouts_J0836/ --results-dir results_J0836/
+    --results-dir results_J0836/
 """
 from __future__ import print_function, division
 
@@ -132,282 +129,54 @@ class ExtractionResult:
 
 
 # ---------------------------------------------------------------------------
-# Helpers: IRSA download
+# Helpers: Talltable processing
 # ---------------------------------------------------------------------------
 
-def _query_spherex(ra, dec, radius_arcsec=3.0):
-    """Return a list of SPHEREx access URLs covering (ra, dec)."""
-    coord = SkyCoord(ra=ra * u.deg, dec=dec * u.deg)
-    try:
-        rslt = Irsa.query_sia(
-            pos=(coord.ra, coord.dec, radius_arcsec * u.arcsec),
-            instrument="SPHEREx",
-        )
-    except Exception as exc:
-        print(f"  [WARN] IRSA query failed: {exc}")
-        return []
-    if len(rslt) == 0:
-        return []
-    return list(rslt["access_url"])
-
-
-def _build_cutout_url(access_url, ra, dec, cutout_size_deg):
-    """Convert an IRSA access URL to a cutout service URL."""
-    base = "https://irsa.ipac.caltech.edu/"
-    url = access_url
-    if url.startswith(base):
-        data_path = url[len(base):]
-    elif url.startswith("/"):
-        data_path = url[1:]
-    else:
-        data_path = url
-    # Strip leading ibe/data/ if present
-    for prefix in ("ibe/data/",):
-        if data_path.startswith(prefix):
-            data_path = data_path[len(prefix):]
-            break
-    return (
-        f"{base}ibe/cutout?ra={ra}&dec={dec}"
-        f"&size={cutout_size_deg}&path={data_path}"
-    )
-
-def _download_file(url, out_path, max_retries = 10, retry_delay = 2.0, timeout = 15.0):
+def download_cutout_pixels(ra,dec,cutout_size_deg=0.05):
     """
-    Download *url* to *out_path*. Returns True on success.
-
-    On failure the download is retried up to *max_retries* times, with a
-    pause of *retry_delay* seconds between attempts.
-    
-    If download takes longer than *timeout* seconds to complete, count this
-    as a failure and try again, it was probably stuck.
+    Load the pixels corresponding to a small region around the target source.
     """
-    import time
-
-    for attempt in range(1, max_retries + 1):
-        try:
-            response = urlopen(url,timeout=timeout)
-            data = response.read()
-
-            if len(data) < 100:
-                snippet = data.decode("utf-8", errors="ignore")
-                if any(k in snippet.lower() for k in ("error", "not found", "404")):
-                    # Treat as a hard failure — no point retrying an error page
-                    print(f"  [WARN] Response looks like an error page: {snippet[:120]}")
-                    return False
-
-            with open(out_path, "wb") as fh:
-                fh.write(data)
-            return True
-
-        except (IncompleteRead, HTTPError, OSError) as exc:
-            if attempt < max_retries:
-                print(
-                    f"  [WARN] Download attempt {attempt}/{max_retries} failed: {exc}. "
-                    f"Retrying in {retry_delay:.0f}s..."
-                )
-                time.sleep(retry_delay)
-            else:
-                print(
-                    f"  [ERROR] Download failed after {max_retries} attempt(s): {exc}"
-                )
-                return False
-
-    return False  # unreachable, but satisfies type checkers
-
-from concurrent.futures import ThreadPoolExecutor, as_completed
-
-def download_cutouts(name, ra, dec, output_dir, search_radius_arcsec = 3.0,
-                     cutout_size_deg = 0.05, overwrite = False,
-                     max_workers = 8, max_retries = 10, retry_delay = 2.0):
-    """
-    Query IRSA for SPHEREx files covering (ra, dec) and download cutouts
-    in parallel.
-
-    Returns a list of local file paths that were successfully downloaded
-    (or already existed).
-
-    Parameters
-    ----------
-    name                 : source label used as a filename prefix
-    ra, dec              : target position in decimal degrees
-    output_dir           : directory in which to save cutout FITS files
-    search_radius_arcsec : IRSA cone-search radius in arcseconds
-    cutout_size_deg      : side length of the requested cutout in degrees
-    overwrite            : re-download files that already exist on disk
-    max_workers          : number of simultaneous download threads
-    max_retries          : passed through to _download_file
-    retry_delay          : seconds between retries, passed to _download_file
-    """
-    os.makedirs(output_dir, exist_ok=True)
-
-    access_urls = _query_spherex(ra, dec, search_radius_arcsec)
-    if not access_urls:
-        print(f"  No SPHEREx data found for {name}.")
-        return []
-
-    print(f"  Found {len(access_urls)} file(s) for {name}; "
-          f"downloading with up to {max_workers} parallel thread(s).")
-
-    # ----------------------------------------------------------------
-    # Build the work list: (cutout_url, local_path) for every file
-    # that still needs to be downloaded.
-    # ----------------------------------------------------------------
-    work: List[tuple] = []
-    already_have: List[str] = []
-
-    for url in access_urls:
-        orig_name = url.rstrip("/").split("/")[-1].split("?")[0]
-        stem, ext = os.path.splitext(orig_name)
-        out_name  = f"{name}_cutout_{stem}{ext}"
-        cutout_dir= os.path.join(output_dir, name)
-        out_path  = os.path.join(cutout_dir, out_name)
-        os.makedirs(cutout_dir, exist_ok=True)
-        if os.path.exists(out_path) and not overwrite:
-            print(f"  Skipping (exists): {out_name}")
-            already_have.append(out_path)
-        else:
-            cutout_url = _build_cutout_url(url, ra, dec, cutout_size_deg)
-            work.append((cutout_url, out_path, out_name))
-
-    if not work:
-        return already_have
-
-    # ----------------------------------------------------------------
-    # Download in parallel.
-    # ----------------------------------------------------------------
-    local_paths: List[str] = list(already_have)  # seed with files we already had
-
-    # Each future maps back to its output path so we can report results
-    # in a human-readable order regardless of completion order.
-    future_to_meta: Dict = {}
-
-    with ThreadPoolExecutor(max_workers=min(max_workers, len(work))) as pool:
-        for cutout_url, out_path, out_name in work:
-            future = pool.submit(
-                _download_file,
-                cutout_url,
-                out_path,
-                max_retries,
-                retry_delay,
+    radius = 60.0*cutout_size_deg/2+(6.15/60) # in arcmin
+    query = (
+             PixelQuery(web=True)
+             .disc(ra, dec, radius)
+             .with_wavelengths()
+             .with_rowcoldet()
             )
-            future_to_meta[future] = (out_path, out_name)
-
-        for future in as_completed(future_to_meta):
-            out_path, out_name = future_to_meta[future]
-            try:
-                success = future.result()
-            except Exception as exc:
-                # Unexpected exception inside _download_file — treat as failure
-                print(f"  [ERROR] Unexpected error downloading {out_name}: {exc}")
-                success = False
-
-            if success:
-                print(f"  Downloaded: {out_name}")
-                local_paths.append(out_path)
-            else:
-                print(f"  [WARN] Could not download {out_name} (skipping).")
-
-    return local_paths
-
-def cleanup_cutouts(fits_paths):
+    pixels = query.execute()
+    return pixels
+    
+def cutout_pixels_to_images(pixels,ra,dec,cutout_size_deg=0.05)
     """
-    Delete cutouts for the current target to save space
+    Sort the bucket of pixels from talltable into individual images.
     """
-    for path in fits_paths:
-        os.system(f'rm {path}')
-
-# ---------------------------------------------------------------------------
-# Helpers: spectral WCS (lookup-table interpolation)
-# ---------------------------------------------------------------------------
-
-def _load_wcswave(hdul):
-    """
-    Load the WCS-WAVE lookup table from extension 6.
-
-    Returns a dict with keys 'X_grid', 'Y_grid', 'V_lam', 'V_wid',
-    or an empty dict if the extension is missing / malformed.
-    """
-    try:
-        tab = hdul[6].data
-        X_grid = np.asarray(tab["X"][0], dtype=float).ravel()
-        Y_grid = np.asarray(tab["Y"][0], dtype=float).ravel()
-        A = np.asarray(tab["VALUES"][0])
-
-        # Identify the two-layer axis
-        if A.ndim == 3:
-            if A.shape[-1] == 2:
-                Vlam_raw, Vwid_raw = A[..., 0], A[..., 1]
-            elif A.shape[0] == 2:
-                Vlam_raw, Vwid_raw = A[0], A[1]
-            else:
-                return {}
-        else:
-            return {}
-
-        def _orient(V):
-            V = np.squeeze(np.asarray(V, dtype=float))
-            if V.shape == (len(Y_grid), len(X_grid)):
-                return V
-            if V.shape == (len(X_grid), len(Y_grid)):
-                return V.T
-            return V  # best-effort
-
-        return dict(
-            X_grid=X_grid,
-            Y_grid=Y_grid,
-            V_lam=_orient(Vlam_raw),
-            V_wid=_orient(Vwid_raw),
-        )
-    except Exception:
-        return {}
-
-
-def _wcswave_eval(x_fulldet, y_fulldet, ww):
-    """
-    Evaluate the wavelength/width lookup table at a full-detector pixel.
-
-    Parameters
-    ----------
-    x_fulldet, y_fulldet : 0-based pixel coordinates in the *full detector*
-        array (i.e. as if the entire detector image were in memory).
-        These are obtained by asking the cutout's WCS for the sky position
-        and then asking the full-image WCS for the corresponding pixel.
-    ww : dict returned by _load_wcswave
-
-    Returns
-    -------
-    (lambda_um, width_um) — both NaN if the table is unavailable.
-
-    """
-    if not ww:
-        return np.nan, np.nan
-
-    # Convert 0-based astropy pixel → 1-based FITS pixel used by the table,
-    # adding the sub-array offset so the coordinate is in the focal-plane frame
-    # that the lookup table was built against.
-    x_raw = float(x_fulldet) + 1.0
-    y_raw = float(y_fulldet) + 1.0
-
-    Xg, Yg = ww["X_grid"], ww["Y_grid"]
-    x_raw = np.clip(x_raw, Xg[0], Xg[-1])
-    y_raw = np.clip(y_raw, Yg[0], Yg[-1])
-
-    i = int(np.clip(np.searchsorted(Xg, x_raw) - 1, 0, len(Xg) - 2))
-    j = int(np.clip(np.searchsorted(Yg, y_raw) - 1, 0, len(Yg) - 2))
-
-    tx = (x_raw - Xg[i]) / (Xg[i + 1] - Xg[i]) if Xg[i + 1] != Xg[i] else 0.0
-    ty = (y_raw - Yg[j]) / (Yg[j + 1] - Yg[j]) if Yg[j + 1] != Yg[j] else 0.0
-
-    def _bilerp(V):
-        return (
-            (1 - tx) * (1 - ty) * V[j,     i    ]
-            + tx       * (1 - ty) * V[j,     i + 1]
-            + (1 - tx) * ty       * V[j + 1, i    ]
-            + tx       * ty       * V[j + 1, i + 1]
-        )
-
-    return float(_bilerp(ww["V_lam"])), float(_bilerp(ww["V_wid"]))
-
+    image_ids = np.unique(np.array(pixels['imageid']))
+    images = []
+    for id in image_ids:
+        m = np.array(pixels['imageid'])==id
+        hp = np.array(pixels['hphigh'])[m]
+        pixra, pixdec = healpy.pix2ang(2**22,hp,lonlat=True,nest=True)
+        xind = np.array(pixels['row'])
+        yind = np.array(pixels['col'])
+        fluximg = np.zeros((xind.max()-xind.min(),yind.max()-yind.min()))
+        fluximg[xind-xind.min(),yind-yind.min()] = np.array(pixels['flux'])[m]
+        varimg = np.zeros((xind.max()-xind.min(),yind.max()-yind.min()))
+        varimg[xind-xind.min(),yind-yind.min()] = np.array(pixels['variance'])[m]
+        flagimg = np.zeros((xind.max()-xind.min(),yind.max()-yind.min()))
+        flagimg[xind-xind.min(),yind-yind.min()] = np.array(pixels['flags'])[m]
+        waveimg = np.zeros((xind.max()-xind.min(),yind.max()-yind.min()))
+        waveimg[xind-xind.min(),yind-yind.min()] = np.array(pixels['wavelength'])[m]
+        dwaveimg = np.zeros((xind.max()-xind.min(),yind.max()-yind.min()))
+        dwaveimg[xind-xind.min(),yind-yind.min()] = np.array(pixels['bandwidth'])[m]
+        raimg = np.zeros((xind.max()-xind.min(),yind.max()-yind.min()))
+        raimg[xind-xind.min(),yind-yind.min()] = pixra
+        decimg = np.zeros((xind.max()-xind.min(),yind.max()-yind.min()))
+        decimg[xind-xind.min(),yind-yind.min()] = pixdec
+        img_dict = {'ra':raimg, 'dec':decimg,
+                    'flux':fluximg, 'var':varimg, 'flags':flagimg,
+                    'wave':waveimg, 'dwave':dwaveimg}
+        images.append(img_dict)
+    return images
 
 # ---------------------------------------------------------------------------
 # Helpers: PSF downsampling
@@ -594,25 +363,20 @@ def optimal_extract(image, image_tab, psf_cubes, name, ra, dec, extract_size = (
     img        = image['flux']
     flags      = image['flags']
     var        = image['var']
+    wave       = image['wave']
+    dwave      = image['dwave']
     
-    
-    # Load PSF cube
-    hdul = fits.open(psf_cube_path)
-    psf_cube   = hdul[1].data
-    hdf_psf    = hdul[1].header
-
     detector_id = image['detector'][0]
     det_id_int  = int(detector_id)
     bandpass    = f"D{det_id_int}"
-    mjd_avg_val =
-
-    hdr = hdul[1].header
-
-    img        = hdul[1].data   # science image [MJy/sr]
-    flags      = hdul[2].data   # flag map
-    var        = hdul[3].data   # variance [MJy/sr]²
-    psf_cube   = hdul[5].data   # PSF cube (n_zones, ny_hr, nx_hr)
-    hdr_psf    = hdul[5].header
+    
+    image_index = np.where(image['imageid'] == image_tab['imageid'])
+    mjd_avg_val = 0.5*(image_tab['t_beg'][image_index]+image_tab['t_end'][image_index])
+    
+    # Load PSF cube
+    hdul = psf_cube_fits[det_id_int-1]
+    psf_cube   = hdul[1].data
+    hdr_psf    = hdul[1].header
 
     oversamp = hdr_psf["OVERSAMP"]
     cdelt    = hdr_psf["CDELT1"]   # arcsec per high-res px
@@ -622,100 +386,91 @@ def optimal_extract(image, image_tab, psf_cubes, name, ra, dec, extract_size = (
     arcsec2_to_sr = (np.pi / (180.0 * 3600.0)) ** 2
     omega_sr = omega_arcsec2 * arcsec2_to_sr
 
-    detector_id = hdr["DETECTOR"]
-    det_id_int  = int(detector_id)
-    bandpass    = f"D{det_id_int}"
-    obsid       = hdr["OBSID"]
-    expid_val   = hdr["EXPIDN"]
-    mjd_avg_val = hdr["MJD-AVG"]
-
-    det_origin_x = -1*float(hdr["CRPIX1A"])
-    det_origin_y = -1*float(hdr["CRPIX2A"])
-    
+    obsid       = image['obsid']
     det_w        = img.shape[1]
     det_h        = img.shape[0]
-
-    # Spectral WCS lookup table
-    ww = _load_wcswave(hdul)
+    
+    unused = wave == 0
 
     dprint(f"Opened {fits_path}")
     dprint(f"  Image shape: {img.shape}, PSF cube: {psf_cube.shape}")
     dprint(f"  oversamp={oversamp}, px_arcsec={px_arcsec:.3f}, omega_sr={omega_sr:.3e}")
 
-    # ================================================================
-    # 2. Target pixel position
-    #
-    # We need two distinct pixel coordinates for the target:
-    #
-    #  (a) xcut, ycut  — position within the cutout array (H × W).
-    #      Used for PSF placement and the extraction itself.
-    #      Derived from the *cutout's own WCS* so it is correct
-    #      regardless of how the cutout was produced.
-    #
-    #  (b) xpix_fulldet, ypix_fulldet  — position in the original
-    #      full-detector array.  Used only for PSF zone selection and
-    #      spectral WCS evaluation, both of which were calibrated
-    #      against the full-detector coordinate system.
-    #      Derived from the *full-image WCS* loaded from the header.
-    #
-    # When the file was delivered by the IRSA cutout service its header
-    # carries an updated CRPIX, so the file's own WCS IS the cutout WCS.
-    # The full-detector coordinate is recovered by asking that same WCS
-    # for the pixel that corresponds to the target sky position and then
-    # subtracting the sub-array offset stored in CRPIX1A / CRPIX1A.
-    # ================================================================
-    sky = SkyCoord(ra=ra * u.deg, dec=dec * u.deg)
-
-    # (a) Cutout pixel coordinate — always from the file's own WCS
-    xcut, ycut = wcs_img.world_to_pixel(sky)
-
-    # (b) Full-detector pixel coordinate.
-    # CRPIX1A / CRPIX1A record how many detector pixels separate the
-    # [0, 0] corner of this file's array from the [0, 0] corner of the
-    # full detector.  Subtracting them converts the cutout-local pixel back
-    # to the full-detector frame (still 0-based).
-    xpix_fulldet = float(xcut) + det_origin_x
-    ypix_fulldet = float(ycut) + det_origin_y
-
-    dprint(f"  Target cutout pixel : x={xcut:.3f}, y={ycut:.3f}")
-    dprint(f"  Target full-det pixel: x={xpix_fulldet:.3f}, y={ypix_fulldet:.3f}")
-
-    h_img, w_img = img.shape
-    near_edge = bool(
-        xcut < 10 or ycut < 10
-        or (w_img - xcut) < 10
-        or (h_img - ycut) < 10
-    )
+#    # ================================================================
+#    # 2. Target pixel position
+#    #
+#    # We need two distinct pixel coordinates for the target:
+#    #
+#    #  (a) xcut, ycut  — position within the cutout array (H × W).
+#    #      Used for PSF placement and the extraction itself.
+#    #      Derived from the *cutout's own WCS* so it is correct
+#    #      regardless of how the cutout was produced.
+#    #
+#    #  (b) xpix_fulldet, ypix_fulldet  — position in the original
+#    #      full-detector array.  Used only for PSF zone selection and
+#    #      spectral WCS evaluation, both of which were calibrated
+#    #      against the full-detector coordinate system.
+#    #      Derived from the *full-image WCS* loaded from the header.
+#    #
+#    # When the file was delivered by the IRSA cutout service its header
+#    # carries an updated CRPIX, so the file's own WCS IS the cutout WCS.
+#    # The full-detector coordinate is recovered by asking that same WCS
+#    # for the pixel that corresponds to the target sky position and then
+#    # subtracting the sub-array offset stored in CRPIX1A / CRPIX1A.
+#    # ================================================================
+#    sky = SkyCoord(ra=ra * u.deg, dec=dec * u.deg)
+#
+#    # (a) Cutout pixel coordinate — always from the file's own WCS
+#    xcut, ycut = wcs_img.world_to_pixel(sky)
+#
+#    # (b) Full-detector pixel coordinate.
+#    # CRPIX1A / CRPIX1A record how many detector pixels separate the
+#    # [0, 0] corner of this file's array from the [0, 0] corner of the
+#    # full detector.  Subtracting them converts the cutout-local pixel back
+#    # to the full-detector frame (still 0-based).
+#    xpix_fulldet = float(xcut) + det_origin_x
+#    ypix_fulldet = float(ycut) + det_origin_y
+#
+#    dprint(f"  Target cutout pixel : x={xcut:.3f}, y={ycut:.3f}")
+#    dprint(f"  Target full-det pixel: x={xpix_fulldet:.3f}, y={ypix_fulldet:.3f}")
+#
+#    h_img, w_img = img.shape
+#    edgbuf = 4
+#    near_edge = bool(
+#        xcut < edgbuf or ycut < edgbuf
+#        or (w_img - xcut) < 4
+#        or (h_img - ycut) < 4
+#    )
 
     # ================================================================
     # 3. Cutout
     # ================================================================
-    try:
-        cut_img   = Cutout2D(img,   (xcut, ycut), extract_size, wcs=wcs_img,
-                             mode="partial", fill_value=np.nan)
-        cut_flags = Cutout2D(flags, (xcut, ycut), extract_size, wcs=wcs_img,
-                             mode="partial", fill_value=0).data
-        cut_var   = Cutout2D(var,   (xcut, ycut), extract_size, wcs=wcs_img,
-                             mode="partial", fill_value=np.nan).data
-    except NoOverlapError:
-        print("  [WARN] Target outside image footprint; skipping.")
-        return _nan_result(near_detector_edge=near_edge)
-
-    # Re-derive the target position within the Cutout2D sub-array using
-    # the cutout's own (updated) WCS.  This absorbs any rounding that
-    # Cutout2D applied when choosing the sub-array centre.
-    wcs_cut = cut_img.wcs
-    xcut, ycut = wcs_cut.world_to_pixel(sky)
-
-    data_raw = cut_img.data.copy()
-    H, W = data_raw.shape
-    dprint(f"  Cutout shape: {H}×{W}, target at xcut={xcut:.3f}, ycut={ycut:.3f}")
+#    try:
+#        cut_img   = Cutout2D(img,   (xcut, ycut), extract_size, wcs=wcs_img,
+#                             mode="partial", fill_value=np.nan)
+#        cut_flags = Cutout2D(flags, (xcut, ycut), extract_size, wcs=wcs_img,
+#                             mode="partial", fill_value=0).data
+#        cut_var   = Cutout2D(var,   (xcut, ycut), extract_size, wcs=wcs_img,
+#                             mode="partial", fill_value=np.nan).data
+#    except NoOverlapError:
+#        print("  [WARN] Target outside image footprint; skipping.")
+#        return _nan_result(near_detector_edge=near_edge)
+#
+#    # Re-derive the target position within the Cutout2D sub-array using
+#    # the cutout's own (updated) WCS.  This absorbs any rounding that
+#    # Cutout2D applied when choosing the sub-array centre.
+#    wcs_cut = cut_img.wcs
+#    xcut, ycut = wcs_cut.world_to_pixel(sky)
+#
+#    data_raw = cut_img.data.copy()
+#    H, W = data_raw.shape
+#    dprint(f"  Cutout shape: {H}×{W}, target at xcut={xcut:.3f}, ycut={ycut:.3f}")
     
     # ================================================================
     # 4. Background subtraction
     # ================================================================
-    mask_bcg = (cut_flags.astype(np.uint32) & _BAD_BITS_BCG) != 0
-    good_bcg = (~mask_bcg) & np.isfinite(data_raw)
+    mask_bcg = (flags.astype(np.uint32) & _BAD_BITS_BCG) != 0
+    good_bcg = (~mask_bcg) & np.isfinite(data_raw) & (~unused)
     bkg_npix = int(np.sum(good_bcg))
 
     if bkg_npix >= 3:
@@ -1075,7 +830,7 @@ def _read_input_file(filename):
 def _build_parser():
     p = argparse.ArgumentParser(
         description=(
-            "Download SPHEREx cutouts from IRSA and extract photometry "
+            "Download SPHEREx cutouts with talltable and extract photometry "
             "via 2D optimal extraction (Horne 1986)."
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -1095,20 +850,10 @@ def _build_parser():
                    help="Source name label (used with --ra/--dec)")
 
     # Download options
-    p.add_argument("--fits-dir", default="spherex_cutouts",
-                   help="Directory for downloaded FITS cutouts (default: spherex_cutouts/)")
-    p.add_argument("--skip-download", action="store_true",
-                   help="Do not query IRSA; use FITS files already in --fits-dir")
-    p.add_argument("--search-radius", type=float, default=3.0, metavar="ARCSEC",
-                   help="IRSA search radius in arcsec (default: 3.0)")
     p.add_argument("--cutout-size", type=float, default=0.05, metavar="DEG",
                    help="Cutout size in degrees (default: 0.01 = 36 arcsec)")
-    p.add_argument("--overwrite", action="store_true",
-                   help="Re-download existing cutout files")
-    p.add_argument("--cleanup", action="store_true",
-                   help="Delete cutout files after completion")
-    p.add_argument("--dl-threads", type=int, default=8,
-                   help="Number of simultaneous downloads (default = 8)")
+#    p.add_argument("--dl-threads", type=int, default=8,
+#                   help="Number of simultaneous downloads (default = 8)")
 
     # Extraction options
     p.add_argument("--fit-radius", type=float, default=4.0, metavar="PX",
@@ -1220,7 +965,7 @@ def main(argv=None):
         # ------------------------------------------------------------------
         
         cutout_pixels = download_cutout_pixels(ra=ra,dec=dec,cutout_size_deg=args.cutout_size)
-        cutout_images = cutout_pixels_to_images(cutout_images)
+        cutout_images = cutout_pixels_to_images(cutout_pixels)
 
         # ------------------------------------------------------------------
         # Step 2: optimal extraction from each cutout
