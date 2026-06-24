@@ -991,6 +991,11 @@ def main(argv=None):
         # Step 1: download cutout pixels
         # ------------------------------------------------------------------
         
+        csv_path = os.path.join(args.results_dir, f"{name}_spherex_photometry.csv")
+        if len(targets) > 1 and os.path.isfile(csv_path):
+            print(f"  Already extracted this object, skipping to the next one.")
+            continue
+        
         cutout_pixels = download_cutout_pixels(ra=ra,dec=dec,cutout_size_deg=args.cutout_size)
         cutout_images = cutout_pixels_to_images(cutout_pixels,image_tab)
 
