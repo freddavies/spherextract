@@ -149,49 +149,185 @@ def download_cutout_pixels(ra,dec,cutout_size_deg=0.05):
     print("Done.")
     return pixels
     
-def cutout_pixels_to_images(pixels,image_tab):
+#def cutout_pixels_to_images(pixels,image_tab):
+#    """
+#    Sort the bucket of pixels from talltable into individual images.
+#    """
+#    image_ids = np.unique(np.array(pixels['imageid']))
+#    images = []
+#    print("Sorting pixels into images...")
+#    for id in image_ids:
+#        m = np.array(pixels['imageid'])==id
+#        hp = np.array(pixels['hphigh'])[m]
+#        pixra, pixdec = healpy.pix2ang(2**22,hp,lonlat=True,nest=True)
+#        xind = np.array(pixels['row'])[m]
+#        yind = np.array(pixels['col'])[m]
+#        fluximg = np.zeros((xind.max()-xind.min()+1,yind.max()-yind.min()+1))
+#        fluximg[xind-xind.min(),yind-yind.min()] = np.array(pixels['flux'])[m]
+#        varimg = np.zeros((xind.max()-xind.min()+1,yind.max()-yind.min()+1))
+#        varimg[xind-xind.min(),yind-yind.min()] = np.array(pixels['variance'])[m]
+#        flagimg = np.zeros((xind.max()-xind.min()+1,yind.max()-yind.min()+1))
+#        flagimg[xind-xind.min(),yind-yind.min()] = np.array(pixels['flags'])[m]
+#        waveimg = np.zeros((xind.max()-xind.min()+1,yind.max()-yind.min()+1))
+#        waveimg[xind-xind.min(),yind-yind.min()] = np.array(pixels['wavelength'])[m]
+#        dwaveimg = np.zeros((xind.max()-xind.min()+1,yind.max()-yind.min()+1))
+#        dwaveimg[xind-xind.min(),yind-yind.min()] = np.array(pixels['bandwidth'])[m]
+#        raimg = np.zeros((xind.max()-xind.min()+1,yind.max()-yind.min()+1))
+#        raimg[xind-xind.min(),yind-yind.min()] = pixra
+#        decimg = np.zeros((xind.max()-xind.min()+1,yind.max()-yind.min()+1))
+#        decimg[xind-xind.min(),yind-yind.min()] = pixdec
+#        rowimg = np.zeros((xind.max()-xind.min()+1,yind.max()-yind.min()+1))
+#        rowimg[xind-xind.min(),yind-yind.min()] = xind
+#        colimg = np.zeros((xind.max()-xind.min()+1,yind.max()-yind.min()+1))
+#        colimg[xind-xind.min(),yind-yind.min()] = yind
+#        
+#        im = np.where(image_tab['imageid'] == id)[0][0]
+#        mjd_avg = 0.5*(np.array(image_tab['t_beg'])[im]+np.array(image_tab['t_end'])[im])
+#        obsid = np.array(image_tab['obsid'])[im]
+#        
+#        img_dict = {'ra':raimg, 'dec':decimg, 'row': rowimg, 'col': colimg,
+#                    'flux':fluximg, 'var':varimg, 'flags':flagimg, 'wave':waveimg, 'dwave':dwaveimg,
+#                    'detector_id':np.array(pixels['det'])[m][0], 'obsid':obsid, 'imageid':id,
+#                    'mjd_avg':mjd_avg}
+#        images.append(img_dict)
+#    print("Done.")
+#    return images
+    
+def cutout_pixels_to_images(pixels, image_tab):
     """
-    Sort the bucket of pixels from talltable into individual images.
+    Reconstruction of individual images from a big bucket of pixels.
     """
-    image_ids = np.unique(np.array(pixels['imageid']))
+    # --- Extract pyarrow.table columns up front ---
+    pix_ids   = np.asarray(pixels['imageid'])
+    all_row   = np.asarray(pixels['row'])
+    all_col   = np.asarray(pixels['col'])
+    all_flux  = np.asarray(pixels['flux'])
+    all_var   = np.asarray(pixels['variance'])
+    all_flag  = np.asarray(pixels['flags'])
+    all_wave  = np.asarray(pixels['wavelength'])
+    all_dwave = np.asarray(pixels['bandwidth'])
+    all_hp    = np.asarray(pixels['hphigh'])
+    all_det   = np.asarray(pixels['det'])
+
+    # --- Sort once by imageid to make groups contiguous ---
+    sort_idx    = np.argsort(pix_ids, kind='stable')
+    sorted_ids  = pix_ids[sort_idx]
+    unique_ids, start_indices = np.unique(sorted_ids, return_index=True)
+
+    # --- Precompute metadata lookup ---
+    tab_meta = {
+        img_id: (t_beg, t_end, obsid)
+        for img_id, t_beg, t_end, obsid in zip(
+            np.asarray(image_tab['imageid']),
+            np.asarray(image_tab['t_beg']),
+            np.asarray(image_tab['t_end']),
+            np.asarray(image_tab['obsid']),
+        )
+    }
+
+    # --- Compute RA/Dec for ALL pixels in one healpy call ---
+    # healpy.pix2ang vectorises efficiently over the full array
+    all_ra, all_dec = healpy.pix2ang(
+        2**22, all_hp[sort_idx], lonlat=True, nest=True
+    )
+    # all_ra / all_dec are now aligned with sort_idx order
+
     images = []
+    n_imgs = len(unique_ids)
     print("Sorting pixels into images...")
-    for id in image_ids:
-        m = np.array(pixels['imageid'])==id
-        hp = np.array(pixels['hphigh'])[m]
-        pixra, pixdec = healpy.pix2ang(2**22,hp,lonlat=True,nest=True)
-        xind = np.array(pixels['row'])[m]
-        yind = np.array(pixels['col'])[m]
-        fluximg = np.zeros((xind.max()-xind.min()+1,yind.max()-yind.min()+1))
-        fluximg[xind-xind.min(),yind-yind.min()] = np.array(pixels['flux'])[m]
-        varimg = np.zeros((xind.max()-xind.min()+1,yind.max()-yind.min()+1))
-        varimg[xind-xind.min(),yind-yind.min()] = np.array(pixels['variance'])[m]
-        flagimg = np.zeros((xind.max()-xind.min()+1,yind.max()-yind.min()+1))
-        flagimg[xind-xind.min(),yind-yind.min()] = np.array(pixels['flags'])[m]
-        waveimg = np.zeros((xind.max()-xind.min()+1,yind.max()-yind.min()+1))
-        waveimg[xind-xind.min(),yind-yind.min()] = np.array(pixels['wavelength'])[m]
-        dwaveimg = np.zeros((xind.max()-xind.min()+1,yind.max()-yind.min()+1))
-        dwaveimg[xind-xind.min(),yind-yind.min()] = np.array(pixels['bandwidth'])[m]
-        raimg = np.zeros((xind.max()-xind.min()+1,yind.max()-yind.min()+1))
-        raimg[xind-xind.min(),yind-yind.min()] = pixra
-        decimg = np.zeros((xind.max()-xind.min()+1,yind.max()-yind.min()+1))
-        decimg[xind-xind.min(),yind-yind.min()] = pixdec
-        rowimg = np.zeros((xind.max()-xind.min()+1,yind.max()-yind.min()+1))
-        rowimg[xind-xind.min(),yind-yind.min()] = xind
-        colimg = np.zeros((xind.max()-xind.min()+1,yind.max()-yind.min()+1))
-        colimg[xind-xind.min(),yind-yind.min()] = yind
-        
-        im = np.where(image_tab['imageid'] == id)[0][0]
-        mjd_avg = 0.5*(np.array(image_tab['t_beg'])[im]+np.array(image_tab['t_end'])[im])
-        obsid = np.array(image_tab['obsid'])[im]
-        
-        img_dict = {'ra':raimg, 'dec':decimg, 'row': rowimg, 'col': colimg,
-                    'flux':fluximg, 'var':varimg, 'flags':flagimg, 'wave':waveimg, 'dwave':dwaveimg,
-                    'detector_id':np.array(pixels['det'])[m][0], 'obsid':obsid, 'imageid':id,
-                    'mjd_avg':mjd_avg}
-        images.append(img_dict)
+
+    for i in range(n_imgs):
+        start = start_indices[i]
+        end   = start_indices[i + 1] if i < n_imgs - 1 else len(pix_ids)
+
+        if end - start < 10:
+            continue
+
+        idx = sort_idx[start:end]       # original positions
+        sl  = slice(start, end)         # positions in sorted arrays
+
+        # Coordinates & bounding box
+        xind = all_row[idx]
+        yind = all_col[idx]
+        xmin, xmax = xind.min(), xind.max()
+        ymin, ymax = yind.min(), yind.max()
+        h, w  = xmax - xmin + 1, ymax - ymin + 1
+        off_x = xind - xmin
+        off_y = yind - ymin
+
+        # Preallocate output arrays
+        fluximg  = np.zeros((h, w))
+        varimg   = np.zeros((h, w))
+        flagimg  = np.zeros((h, w))
+        waveimg  = np.zeros((h, w))
+        dwaveimg = np.zeros((h, w))
+        rowimg   = np.zeros((h, w))
+        colimg   = np.zeros((h, w))
+        raimg    = np.empty((h, w))
+        decimg   = np.empty((h, w))
+
+        # Vectorised scatter into 2-D arrays
+        fluximg [off_x, off_y] = all_flux [idx]
+        varimg  [off_x, off_y] = all_var  [idx]
+        flagimg [off_x, off_y] = all_flag [idx]
+        waveimg [off_x, off_y] = all_wave [idx]
+        dwaveimg[off_x, off_y] = all_dwave[idx]
+        rowimg  [off_x, off_y] = xind
+        colimg  [off_x, off_y] = yind
+        raimg   [off_x, off_y] = all_ra [sl]   # sl works because sorted
+        decimg  [off_x, off_y] = all_dec[sl]
+
+        img_id = unique_ids[i]
+        t_beg, t_end, obsid_val = tab_meta[img_id]
+
+        images.append({
+            'ra': raimg,  'dec': decimg,
+            'row': rowimg, 'col': colimg,
+            'flux': fluximg, 'var': varimg, 'flags': flagimg,
+            'wave': waveimg, 'dwave': dwaveimg,
+            'detector_id': all_det[idx[0]],
+            'obsid': obsid_val, 'imageid': img_id,
+            'mjd_avg': 0.5 * (t_beg + t_end),
+        })
+
     print("Done.")
     return images
+
+# Helper: WCS determination from constructed images
+def fit_affine_wcs(image,mask=None):
+    """
+    Fit a local affine (linear) WCS from pixel RA/Dec arrays.
+    Returns a callable that maps (ra, dec) -> (col_offset, row_offset).
+    """
+    ra_flat  = image['ra'][mask].flatten()
+    dec_flat = image['dec'][mask].flatten()
+    col_flat = image['col'][mask].flatten() - image['col'][mask].min()
+    row_flat = image['row'][mask].flatten() - image['row'][mask].min()
+
+    # Centre coordinates for numerical stability
+    ra0  = ra_flat.mean()
+    dec0 = dec_flat.mean()
+    dra  = ra_flat  - ra0
+    ddec = dec_flat - dec0
+
+    # Design matrix: [dRA, dDec, 1] — one row per pixel
+    A = np.column_stack([dra, ddec, np.ones(len(dra))])
+
+    # Solve for col and row simultaneously (lstsq handles both RHS columns)
+    coeffs, *_ = np.linalg.lstsq(A, np.column_stack([col_flat, row_flat]),
+                                  rcond=None)
+    # coeffs is (3, 2):  [[a, d],
+    #                      [b, e],
+    #                      [c, f]]
+
+    def evaluate(ra, dec):
+        dra_q  = ra  - ra0
+        ddec_q = dec - dec0
+        col_offset = coeffs[0, 0] * dra_q + coeffs[1, 0] * ddec_q + coeffs[2, 0]
+        row_offset = coeffs[0, 1] * dra_q + coeffs[1, 1] * ddec_q + coeffs[2, 1]
+        return col_offset, row_offset
+
+    return evaluate
 
 # ---------------------------------------------------------------------------
 # Helpers: PSF downsampling
@@ -352,7 +488,7 @@ def optimal_extract(image, psf_cube_fits, name, ra, dec, fit_radius_px = 3.0,
     def _nan_result(**overrides):
         """Return a fully-NaN ExtractionResult for early-abort cases."""
         base = dict(
-            name=name, image=image,
+            name=name,
             input_ra_deg=float(ra), input_dec_deg=float(dec),
             obsid=None, detector_id=None, bandpass=None, expid=None,
             mjd_avg=None, psf_index=None, omega_sr=None,
@@ -433,15 +569,19 @@ def optimal_extract(image, psf_cube_fits, name, ra, dec, fit_radius_px = 3.0,
 #    xcut, ycut = wcs_img.world_to_pixel(sky)
     # Build 2D interpolation object
     m = ~unused
-    radec_interp = linterp(np.vstack([image['ra'][m].flatten(),image['dec'][m].flatten()]).T,
-                           np.vstack([image['col'][m].flatten()-image['col'][m].min(),
-                                      image['row'][m].flatten()-image['row'][m].min()]).T)
-    xcut,ycut = radec_interp([ra,dec])[0]
+#    radec_interp = linterp(np.vstack([image['ra'][m].flatten(),image['dec'][m].flatten()]).T,
+#                           np.vstack([image['col'][m].flatten()-image['col'][m].min(),
+#                                      image['row'][m].flatten()-image['row'][m].min()]).T)
+#    xcut,ycut = radec_interp([ra,dec])[0]
+
+    wcs = fit_affine_wcs(image,m)
+    xcut, ycut = wcs(ra, dec)
+
     # The above is really overengineered; we honestly just have to construct our own WCS.
     # But it works in 99% of cases...
     if np.isnan(xcut) | np.isnan(ycut):
         print("  [WARN] Target outside image footprint; skipping.")
-        return _nan_result()
+        return _nan_result(near_detector_edge=True)
 #
 #    # (b) Full-detector pixel coordinate.
 #    # CRPIX1A / CRPIX1A record how many detector pixels separate the
@@ -728,7 +868,7 @@ def optimal_extract(image, psf_cube_fits, name, ra, dec, fit_radius_px = 3.0,
         px_scale_arcsec=float(px_arcsec),
         wv_um=float(wv_um),
         wv_width_um=float(wv_width_um),
-        near_detector_edge=near_edge,
+        near_detector_edge=False,
         n_pix_total=n_total,
         n_pix_flagged=n_flagged,
         n_pix_outlier=n_outlier,
@@ -996,7 +1136,11 @@ def main(argv=None):
             print(f"  Already extracted this object, skipping to the next one.")
             continue
         
-        cutout_pixels = download_cutout_pixels(ra=ra,dec=dec,cutout_size_deg=args.cutout_size)
+        try:
+            cutout_pixels = download_cutout_pixels(ra=ra,dec=dec,cutout_size_deg=args.cutout_size)
+        except:
+            print("   PixelQuery failed. Try again later?")
+            continue
         cutout_images = cutout_pixels_to_images(cutout_pixels,image_tab)
 
         # ------------------------------------------------------------------
@@ -1019,17 +1163,17 @@ def main(argv=None):
                 results_dir=args.results_dir,
                 no_masking=args.no_masking,
             )
-            if ~np.isnan(result.opt_flux_uJy):
+            if result.wv_um is not None and result.wv_um is not np.nan:
                 all_results.append(result)
-            print(
-                    f"    λ={result.wv_um or 'N/A':.4f} µm  "
-                    f"flux={result.opt_flux_MJysr or 'N/A'} MJy/sr"
-                    f"  ({result.opt_flux_uJy or 'N/A'} µJy)"
-                    f"  S/N={result.opt_snr or 'N/A':.2f}"
-                    f"  n_used={result.n_pix_used}"
-                    f"  n_outlier={result.n_pix_outlier}"
-                    f"  converged={result.converged}"
-                 )
+                print(
+                        f"    λ={result.wv_um or 'N/A'} µm  "
+                        f"flux={result.opt_flux_MJysr or 'N/A'} MJy/sr"
+                        f"  ({result.opt_flux_uJy or 'N/A'} µJy)"
+                        f"  S/N={result.opt_snr or 'N/A'}"
+                        f"  n_used={result.n_pix_used}"
+                        f"  n_outlier={result.n_pix_outlier}"
+                        f"  converged={result.converged}"
+                     )
         # ------------------------------------------------------------------
         # Combined CSV + TXT (always written if there are any results)
         # ------------------------------------------------------------------
