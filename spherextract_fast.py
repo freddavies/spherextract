@@ -548,84 +548,31 @@ def optimal_extract(image, psf_cube_fits, name, ra, dec, fit_radius_px = 3.0,
 #    #
 #    #  (a) xcut, ycut  — position within the cutout array (H × W).
 #    #      Used for PSF placement and the extraction itself.
-#    #      Derived from the *cutout's own WCS* so it is correct
-#    #      regardless of how the cutout was produced.
 #    #
 #    #  (b) xpix_fulldet, ypix_fulldet  — position in the original
-#    #      full-detector array.  Used only for PSF zone selection and
-#    #      spectral WCS evaluation, both of which were calibrated
-#    #      against the full-detector coordinate system.
-#    #      Derived from the *full-image WCS* loaded from the header.
+#    #      full-detector array.  Used only for PSF zone selection
 #    #
-#    # When the file was delivered by the IRSA cutout service its header
-#    # carries an updated CRPIX, so the file's own WCS IS the cutout WCS.
-#    # The full-detector coordinate is recovered by asking that same WCS
-#    # for the pixel that corresponds to the target sky position and then
-#    # subtracting the sub-array offset stored in CRPIX1A / CRPIX1A.
 #    # ================================================================
-#    sky = SkyCoord(ra=ra * u.deg, dec=dec * u.deg)
-#
-#    # (a) Cutout pixel coordinate — always from the file's own WCS
-#    xcut, ycut = wcs_img.world_to_pixel(sky)
-    # Build 2D interpolation object
-    m = ~unused
-#    radec_interp = linterp(np.vstack([image['ra'][m].flatten(),image['dec'][m].flatten()]).T,
-#                           np.vstack([image['col'][m].flatten()-image['col'][m].min(),
-#                                      image['row'][m].flatten()-image['row'][m].min()]).T)
-#    xcut,ycut = radec_interp([ra,dec])[0]
 
+
+#    # (a) Cutout pixel coordinate
+    m = ~unused
     wcs = fit_affine_wcs(image,m)
     xcut, ycut = wcs(ra, dec)
-
-    # The above is really overengineered; we honestly just have to construct our own WCS.
-    # But it works in 99% of cases...
-    if np.isnan(xcut) | np.isnan(ycut):
+    if xcut < 0 or xcut > det_w-1 or ycut < 0 or ycut > det_h-1:
         print("  [WARN] Target outside image footprint; skipping.")
         return _nan_result(near_detector_edge=True)
-#
+
 #    # (b) Full-detector pixel coordinate.
-#    # CRPIX1A / CRPIX1A record how many detector pixels separate the
-#    # [0, 0] corner of this file's array from the [0, 0] corner of the
-#    # full detector.  Subtracting them converts the cutout-local pixel back
-#    # to the full-detector frame (still 0-based).
     xpix_fulldet = xcut+image['col'][m].min()
     ypix_fulldet = ycut+image['row'][m].min()
-#
-#    dprint(f"  Target cutout pixel : x={xcut:.3f}, y={ycut:.3f}")
-#    dprint(f"  Target full-det pixel: x={xpix_fulldet:.3f}, y={ypix_fulldet:.3f}")
-#
-#    h_img, w_img = img.shape
-#    edgbuf = 2
-#    near_edge = bool(
-#        xcut < edgbuf or ycut < edgbuf
-#        or (w_img - xcut) < edgbuf
-#        or (h_img - ycut) < edgbuf
-#    )
+
+    dprint(f"  Target cutout pixel : x={xcut:.3f}, y={ycut:.3f}")
+    dprint(f"  Target full-det pixel: x={xpix_fulldet:.3f}, y={ypix_fulldet:.3f}")
 
     # ================================================================
     # 3. Cutout
     # ================================================================
-#    try:
-#        cut_img   = Cutout2D(img,   (xcut, ycut), extract_size, wcs=wcs_img,
-#                             mode="partial", fill_value=np.nan)
-#        cut_flags = Cutout2D(flags, (xcut, ycut), extract_size, wcs=wcs_img,
-#                             mode="partial", fill_value=0).data
-#        cut_var   = Cutout2D(var,   (xcut, ycut), extract_size, wcs=wcs_img,
-#                             mode="partial", fill_value=np.nan).data
-#    except NoOverlapError:
-#        print("  [WARN] Target outside image footprint; skipping.")
-#        return _nan_result(near_detector_edge=near_edge)
-#
-#    # Re-derive the target position within the Cutout2D sub-array using
-#    # the cutout's own (updated) WCS.  This absorbs any rounding that
-#    # Cutout2D applied when choosing the sub-array centre.
-#    wcs_cut = cut_img.wcs
-#    xcut, ycut = wcs_cut.world_to_pixel(sky)
-#
-#    data_raw = cut_img.data.copy()
-#    H, W = data_raw.shape
-#    dprint(f"  Cutout shape: {H}×{W}, target at xcut={xcut:.3f}, ycut={ycut:.3f}")
-
     cut_img = np.copy(img)
     cut_flags = np.copy(flags)
     cut_var = np.copy(var)
@@ -648,11 +595,11 @@ def optimal_extract(image, psf_cube_fits, name, ra, dec, fit_radius_px = 3.0,
         bkg_npix = int(np.sum(good_any))
         dprint("  [WARN] Few good BCG pixels; using unmasked background estimate.")
         
-    # Can do better than a simple median background.
+    # Should be able to do better than a simple median background.
     # Generically, there can be background features which follow the spectral direction,
     # e.g. sky emission lines or undercorrected dichroic effects etc.
     # So in some cases it may be preferable to construct a background model
-    # which is some function of
+    # which is some function of the spectral direction *only*
     #linear_bcg = True
     #if linear_bcg:
         
@@ -826,9 +773,15 @@ def optimal_extract(image, psf_cube_fits, name, ra, dec, fit_radius_px = 3.0,
     # ================================================================
     # 11. Spectral WCS at target position
     # ================================================================
-    wave_interp = linterp(np.vstack([image['ra'][m].flatten(),image['dec'][m].flatten()]).T,
-                          np.vstack([image['wave'][m].flatten(),image['dwave'][m].flatten()]).T)
-    wv_um, wv_width_um = wave_interp([ra,dec])[0]
+    # Use xcut/ycut and bilinearly interpolate from closeby pixels
+    x1 = int(xcut); x2 = x1+1; y1 = int(ycut); y2 = y1+1
+    try:
+        wv_um = wave[y1,x1]*(x2-xcut)*(y2-ycut)+wave[y2,x1]*(x2-xcut)*(ycut-y1)+wave[y1,x2]*(xcut-x1)*(y2-ycut)+wave[y2,x2]*(xcut-x1)*(ycut-y1)
+        wv_width_um = dwave[y1,x1]*(x2-xcut)*(y2-ycut)+dwave[y2,x1]*(x2-xcut)*(ycut-y1)+dwave[y1,x2]*(xcut-x1)*(y2-ycut)+dwave[y2,x2]*(xcut-x1)*(ycut-y1)
+    except:
+        wv_um = np.nan
+        wv_width_um = np.nan
+   
     dprint(f"  Spectral WCS: λ={wv_um:.5f} µm, Δλ={wv_width_um:.5f} µm")
 
     # ================================================================
