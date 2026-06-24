@@ -67,6 +67,7 @@ from scipy import ndimage
 import talltable
 import healpy
 import pyarrow.parquet
+from scipy.interpolate import LinearNDInterpolator as linterp
 
 from IPython import embed
 
@@ -81,7 +82,6 @@ class ExtractionResult:
 
     # Identification
     name: str
-    fits_path: str
     input_ra_deg: float
     input_dec_deg: float
 
@@ -138,44 +138,59 @@ def download_cutout_pixels(ra,dec,cutout_size_deg=0.05):
     """
     radius = 60.0*cutout_size_deg/2+(6.15/60) # in arcmin
     query = (
-             PixelQuery(web=True)
+             talltable.PixelQuery(web=True)
              .disc(ra, dec, radius)
+             .flags(mask_known_source=False)
              .with_wavelengths()
              .with_rowcoldet()
             )
+    print("Executing talltable query...")
     pixels = query.execute()
+    print("Done.")
     return pixels
     
-def cutout_pixels_to_images(pixels,ra,dec,cutout_size_deg=0.05)
+def cutout_pixels_to_images(pixels,image_tab):
     """
     Sort the bucket of pixels from talltable into individual images.
     """
     image_ids = np.unique(np.array(pixels['imageid']))
     images = []
+    print("Sorting pixels into images...")
     for id in image_ids:
         m = np.array(pixels['imageid'])==id
         hp = np.array(pixels['hphigh'])[m]
         pixra, pixdec = healpy.pix2ang(2**22,hp,lonlat=True,nest=True)
-        xind = np.array(pixels['row'])
-        yind = np.array(pixels['col'])
-        fluximg = np.zeros((xind.max()-xind.min(),yind.max()-yind.min()))
+        xind = np.array(pixels['row'])[m]
+        yind = np.array(pixels['col'])[m]
+        fluximg = np.zeros((xind.max()-xind.min()+1,yind.max()-yind.min()+1))
         fluximg[xind-xind.min(),yind-yind.min()] = np.array(pixels['flux'])[m]
-        varimg = np.zeros((xind.max()-xind.min(),yind.max()-yind.min()))
+        varimg = np.zeros((xind.max()-xind.min()+1,yind.max()-yind.min()+1))
         varimg[xind-xind.min(),yind-yind.min()] = np.array(pixels['variance'])[m]
-        flagimg = np.zeros((xind.max()-xind.min(),yind.max()-yind.min()))
+        flagimg = np.zeros((xind.max()-xind.min()+1,yind.max()-yind.min()+1))
         flagimg[xind-xind.min(),yind-yind.min()] = np.array(pixels['flags'])[m]
-        waveimg = np.zeros((xind.max()-xind.min(),yind.max()-yind.min()))
+        waveimg = np.zeros((xind.max()-xind.min()+1,yind.max()-yind.min()+1))
         waveimg[xind-xind.min(),yind-yind.min()] = np.array(pixels['wavelength'])[m]
-        dwaveimg = np.zeros((xind.max()-xind.min(),yind.max()-yind.min()))
+        dwaveimg = np.zeros((xind.max()-xind.min()+1,yind.max()-yind.min()+1))
         dwaveimg[xind-xind.min(),yind-yind.min()] = np.array(pixels['bandwidth'])[m]
-        raimg = np.zeros((xind.max()-xind.min(),yind.max()-yind.min()))
+        raimg = np.zeros((xind.max()-xind.min()+1,yind.max()-yind.min()+1))
         raimg[xind-xind.min(),yind-yind.min()] = pixra
-        decimg = np.zeros((xind.max()-xind.min(),yind.max()-yind.min()))
+        decimg = np.zeros((xind.max()-xind.min()+1,yind.max()-yind.min()+1))
         decimg[xind-xind.min(),yind-yind.min()] = pixdec
-        img_dict = {'ra':raimg, 'dec':decimg,
-                    'flux':fluximg, 'var':varimg, 'flags':flagimg,
-                    'wave':waveimg, 'dwave':dwaveimg}
+        rowimg = np.zeros((xind.max()-xind.min()+1,yind.max()-yind.min()+1))
+        rowimg[xind-xind.min(),yind-yind.min()] = xind
+        colimg = np.zeros((xind.max()-xind.min()+1,yind.max()-yind.min()+1))
+        colimg[xind-xind.min(),yind-yind.min()] = yind
+        
+        im = np.where(image_tab['imageid'] == id)[0][0]
+        mjd_avg = 0.5*(np.array(image_tab['t_beg'])[im]+np.array(image_tab['t_end'])[im])
+        obsid = np.array(image_tab['obsid'])[im]
+        
+        img_dict = {'ra':raimg, 'dec':decimg, 'row': rowimg, 'col': colimg,
+                    'flux':fluximg, 'var':varimg, 'flags':flagimg, 'wave':waveimg, 'dwave':dwaveimg,
+                    'detector_id':np.array(pixels['det'])[m][0], 'obsid':obsid, 'imageid':id,
+                    'mjd_avg':mjd_avg}
         images.append(img_dict)
+    print("Done.")
     return images
 
 # ---------------------------------------------------------------------------
@@ -281,7 +296,7 @@ _BAD_BITS_BCG = (
 # Core: optimal extraction from a single FITS file
 # ---------------------------------------------------------------------------
 
-def optimal_extract(image, image_tab, psf_cubes, name, ra, dec, extract_size = (21, 21), fit_radius_px = 3.0,
+def optimal_extract(image, psf_cube_fits, name, ra, dec, fit_radius_px = 3.0,
                     kappa = 4.0, max_iter = 10, debug = False, show_figs = False,
                     save_figs = False, results_dir = None, no_masking = False):
     """
@@ -304,7 +319,6 @@ def optimal_extract(image, image_tab, psf_cubes, name, ra, dec, extract_size = (
     image         : cutout image
     name          : source label (used in output filenames)
     ra, dec       : target position (degrees)
-    extract_size  : (ny, nx) cutout to extract from FITS in detector pixels
     fit_radius_px : pixels beyond this radius (from target) are excluded
     kappa         : outlier rejection threshold in units of pixel σ
     max_iter      : maximum outlier-rejection iterations
@@ -366,15 +380,14 @@ def optimal_extract(image, image_tab, psf_cubes, name, ra, dec, extract_size = (
     wave       = image['wave']
     dwave      = image['dwave']
     
-    detector_id = image['detector'][0]
+    detector_id = image['detector_id']
     det_id_int  = int(detector_id)
     bandpass    = f"D{det_id_int}"
     
-    image_index = np.where(image['imageid'] == image_tab['imageid'])
-    mjd_avg_val = 0.5*(image_tab['t_beg'][image_index]+image_tab['t_end'][image_index])
+    mjd_avg_val = image['mjd_avg']
     
     # Load PSF cube
-    hdul = psf_cube_fits[det_id_int-1]
+    hdul       = psf_cube_fits
     psf_cube   = hdul[1].data
     hdr_psf    = hdul[1].header
 
@@ -391,10 +404,6 @@ def optimal_extract(image, image_tab, psf_cubes, name, ra, dec, extract_size = (
     det_h        = img.shape[0]
     
     unused = wave == 0
-
-    dprint(f"Opened {fits_path}")
-    dprint(f"  Image shape: {img.shape}, PSF cube: {psf_cube.shape}")
-    dprint(f"  oversamp={oversamp}, px_arcsec={px_arcsec:.3f}, omega_sr={omega_sr:.3e}")
 
 #    # ================================================================
 #    # 2. Target pixel position
@@ -422,24 +431,35 @@ def optimal_extract(image, image_tab, psf_cubes, name, ra, dec, extract_size = (
 #
 #    # (a) Cutout pixel coordinate — always from the file's own WCS
 #    xcut, ycut = wcs_img.world_to_pixel(sky)
+    # Build 2D interpolation object
+    m = ~unused
+    radec_interp = linterp(np.vstack([image['ra'][m].flatten(),image['dec'][m].flatten()]).T,
+                           np.vstack([image['col'][m].flatten()-image['col'][m].min(),
+                                      image['row'][m].flatten()-image['row'][m].min()]).T)
+    xcut,ycut = radec_interp([ra,dec])[0]
+    # The above is really overengineered; we honestly just have to construct our own WCS.
+    # But it works in 99% of cases...
+    if np.isnan(xcut) | np.isnan(ycut):
+        print("  [WARN] Target outside image footprint; skipping.")
+        return _nan_result()
 #
 #    # (b) Full-detector pixel coordinate.
 #    # CRPIX1A / CRPIX1A record how many detector pixels separate the
 #    # [0, 0] corner of this file's array from the [0, 0] corner of the
 #    # full detector.  Subtracting them converts the cutout-local pixel back
 #    # to the full-detector frame (still 0-based).
-#    xpix_fulldet = float(xcut) + det_origin_x
-#    ypix_fulldet = float(ycut) + det_origin_y
+    xpix_fulldet = xcut+image['col'][m].min()
+    ypix_fulldet = ycut+image['row'][m].min()
 #
 #    dprint(f"  Target cutout pixel : x={xcut:.3f}, y={ycut:.3f}")
 #    dprint(f"  Target full-det pixel: x={xpix_fulldet:.3f}, y={ypix_fulldet:.3f}")
 #
 #    h_img, w_img = img.shape
-#    edgbuf = 4
+#    edgbuf = 2
 #    near_edge = bool(
 #        xcut < edgbuf or ycut < edgbuf
-#        or (w_img - xcut) < 4
-#        or (h_img - ycut) < 4
+#        or (w_img - xcut) < edgbuf
+#        or (h_img - ycut) < edgbuf
 #    )
 
     # ================================================================
@@ -465,20 +485,26 @@ def optimal_extract(image, image_tab, psf_cubes, name, ra, dec, extract_size = (
 #    data_raw = cut_img.data.copy()
 #    H, W = data_raw.shape
 #    dprint(f"  Cutout shape: {H}×{W}, target at xcut={xcut:.3f}, ycut={ycut:.3f}")
+
+    cut_img = np.copy(img)
+    cut_flags = np.copy(flags)
+    cut_var = np.copy(var)
+    H,W = cut_img.shape
+    dprint(f"  Cutout shape: {H}×{W}, target at xcut={xcut:.3f}, ycut={ycut:.3f}")
     
     # ================================================================
     # 4. Background subtraction
     # ================================================================
     mask_bcg = (flags.astype(np.uint32) & _BAD_BITS_BCG) != 0
-    good_bcg = (~mask_bcg) & np.isfinite(data_raw) & (~unused)
+    good_bcg = (~mask_bcg) & np.isfinite(cut_img) & (~unused)
     bkg_npix = int(np.sum(good_bcg))
 
     if bkg_npix >= 3:
-        bkg = float(np.median(data_raw[good_bcg]))
+        bkg = float(np.median(cut_img[good_bcg]))
     else:
         # fallback: ignore flags, use any finite pixel
-        good_any = np.isfinite(data_raw)
-        bkg = float(np.median(data_raw[good_any])) if np.any(good_any) else 0.0
+        good_any = np.isfinite(cut_img)
+        bkg = float(np.median(cut_img[good_any])) if np.any(good_any) else 0.0
         bkg_npix = int(np.sum(good_any))
         dprint("  [WARN] Few good BCG pixels; using unmasked background estimate.")
         
@@ -490,7 +516,7 @@ def optimal_extract(image, image_tab, psf_cubes, name, ra, dec, extract_size = (
     #linear_bcg = True
     #if linear_bcg:
         
-    data = data_raw - bkg
+    data = cut_img - bkg
     dprint(f"  Background: {bkg:.4g} MJy/sr (from {bkg_npix} pixels)")
 
     # ================================================================
@@ -540,7 +566,7 @@ def optimal_extract(image, image_tab, psf_cubes, name, ra, dec, extract_size = (
     ivar = np.where((cut_var > 0) & np.isfinite(cut_var),1.0/cut_var,0.0)
 
     # Base good-pixel mask (will be updated per iteration)
-    base_good = radmask & (~flag_mask) & np.isfinite(data) & (ivar > 0)
+    base_good = radmask & (~flag_mask) & np.isfinite(data) & (ivar > 0) & ~unused
 
     if not np.any(base_good):
         # Auto-fallback: try without flag masking
@@ -660,7 +686,9 @@ def optimal_extract(image, image_tab, psf_cubes, name, ra, dec, extract_size = (
     # ================================================================
     # 11. Spectral WCS at target position
     # ================================================================
-    wv_um, wv_width_um = _wcswave_eval(xpix_fulldet, ypix_fulldet, ww)
+    wave_interp = linterp(np.vstack([image['ra'][m].flatten(),image['dec'][m].flatten()]).T,
+                          np.vstack([image['wave'][m].flatten(),image['dwave'][m].flatten()]).T)
+    wv_um, wv_width_um = wave_interp([ra,dec])[0]
     dprint(f"  Spectral WCS: λ={wv_um:.5f} µm, Δλ={wv_width_um:.5f} µm")
 
     # ================================================================
@@ -688,13 +716,12 @@ def optimal_extract(image, image_tab, psf_cubes, name, ra, dec, extract_size = (
 
     return ExtractionResult(
         name=name,
-        fits_path=fits_path,
         input_ra_deg=float(ra),
         input_dec_deg=float(dec),
         obsid=obsid,
         detector_id=det_id_int,
         bandpass=bandpass,
-        expid=int(expid_val),
+        expid=int(image['imageid']),
         mjd_avg=float(mjd_avg_val),
         psf_index=int(idx_psf),
         omega_sr=float(omega_sr),
@@ -948,7 +975,7 @@ def main(argv=None):
     # Load in table of all SPHEREx image metadata
     image_tab = pyarrow.parquet.read_table(os.path.join(args.image_tab_path,"image.parquet"))
     # Load in PSF model cubes
-    psf_cubes = [fits.open(os.path.join(args.psf_path,'average_psf_D{ii}_spx_cal-psf-v5-2026-082.fits')) for ii in range(1,7)]
+    # psf_cubes = [fits.open(os.path.join(args.psf_path,f'average_psf_D{ii}_spx_cal-psf-v5-2026-082.fits')) for ii in range(1,7)]
 
     # Cutout size in detector pixels for extraction
     extract_px = 21
@@ -965,20 +992,19 @@ def main(argv=None):
         # ------------------------------------------------------------------
         
         cutout_pixels = download_cutout_pixels(ra=ra,dec=dec,cutout_size_deg=args.cutout_size)
-        cutout_images = cutout_pixels_to_images(cutout_pixels)
+        cutout_images = cutout_pixels_to_images(cutout_pixels,image_tab)
 
         # ------------------------------------------------------------------
         # Step 2: optimal extraction from each cutout
         # ------------------------------------------------------------------
         for image in cutout_images:
+            det = image['detector_id']
             result = optimal_extract(
                 image=image,
-                image_tab=image_tab,
-                psf_cube_fits=psf_cube_fits,
+                psf_cube_fits=fits.open(os.path.join(args.psf_path,f'average_psf_D{det}_spx_cal-psf-v5-2026-082.fits')),
                 name=name,
                 ra=ra,
                 dec=dec,
-                extract_size=(extract_px, extract_px),
                 fit_radius_px=args.fit_radius,
                 kappa=args.kappa,
                 max_iter=args.max_iter,
@@ -988,7 +1014,8 @@ def main(argv=None):
                 results_dir=args.results_dir,
                 no_masking=args.no_masking,
             )
-            all_results.append(result)
+            if ~np.isnan(result.opt_flux_uJy):
+                all_results.append(result)
             print(
                     f"    λ={result.wv_um or 'N/A':.4f} µm  "
                     f"flux={result.opt_flux_MJysr or 'N/A'} MJy/sr"
@@ -1008,8 +1035,6 @@ def main(argv=None):
             _results_to_csv(all_results, csv_path)
             txt_path = os.path.join(args.results_dir, f"{name}_spherex_spectrum.txt")
             _spec_to_txt(all_results, txt_path)
-            if args.cleanup:
-                cleanup_cutouts(fits_paths)
         else:
             print("  No results to write.")
 
