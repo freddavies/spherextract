@@ -540,7 +540,8 @@ def optimal_extract(image, psf_cube_fits, name, ra, dec, fit_radius_px = 3.0,
     det_h        = img.shape[0]
     
     unused = wave == 0
-
+    m = ~unused
+    
 #    # ================================================================
 #    # 2. Target pixel position
 #    #
@@ -556,12 +557,18 @@ def optimal_extract(image, psf_cube_fits, name, ra, dec, fit_radius_px = 3.0,
 
 
 #    # (a) Cutout pixel coordinate
-    m = ~unused
     wcs = fit_affine_wcs(image,m)
     xcut, ycut = wcs(ra, dec)
-    if xcut < 0 or xcut > det_w-1 or ycut < 0 or ycut > det_h-1:
+    # Now check whether the nearest pixel is actually on the detector
+    try:
+        badflux = img[int(np.round(ycut)),int(np.round(xcut))] == 0
+    except:
         print("  [WARN] Target outside image footprint; skipping.")
         return _nan_result(near_detector_edge=True)
+    if xcut < 0 or xcut > det_w-1 or ycut < 0 or ycut > det_h-1 or badflux:
+        print("  [WARN] Target outside image footprint; skipping.")
+        return _nan_result(near_detector_edge=True)
+        
 
 #    # (b) Full-detector pixel coordinate.
     xpix_fulldet = xcut+image['col'][m].min()
@@ -773,11 +780,17 @@ def optimal_extract(image, psf_cube_fits, name, ra, dec, fit_radius_px = 3.0,
     # ================================================================
     # 11. Spectral WCS at target position
     # ================================================================
+    
+    
     # Use xcut/ycut and bilinearly interpolate from closeby pixels
     x1 = int(xcut); x2 = x1+1; y1 = int(ycut); y2 = y1+1
     try:
-        wv_um = wave[y1,x1]*(x2-xcut)*(y2-ycut)+wave[y2,x1]*(x2-xcut)*(ycut-y1)+wave[y1,x2]*(xcut-x1)*(y2-ycut)+wave[y2,x2]*(xcut-x1)*(ycut-y1)
-        wv_width_um = dwave[y1,x1]*(x2-xcut)*(y2-ycut)+dwave[y2,x1]*(x2-xcut)*(ycut-y1)+dwave[y1,x2]*(xcut-x1)*(y2-ycut)+dwave[y2,x2]*(xcut-x1)*(ycut-y1)
+        if wave[y1,x1] == 0 or wave[y2,x1] == 0 or wave[y1,x2] == 0 or wave[y2,x2] == 0:
+            wv_um = np.nan
+            wv_width_um = np.nan
+        else:
+            wv_um = wave[y1,x1]*(x2-xcut)*(y2-ycut)+wave[y2,x1]*(x2-xcut)*(ycut-y1)+wave[y1,x2]*(xcut-x1)*(y2-ycut)+wave[y2,x2]*(xcut-x1)*(ycut-y1)
+            wv_width_um = dwave[y1,x1]*(x2-xcut)*(y2-ycut)+dwave[y2,x1]*(x2-xcut)*(ycut-y1)+dwave[y1,x2]*(xcut-x1)*(y2-ycut)+dwave[y2,x2]*(xcut-x1)*(ycut-y1)
     except:
         wv_um = np.nan
         wv_width_um = np.nan
@@ -996,9 +1009,9 @@ def _build_parser():
                    help="Directory for result files (default: spherex_results/)")
                    
     # Data file options
-    p.add_argument("--image-tab-path", default="parquet",
+    p.add_argument("--image-tab-path", default="spherex_calibs",
                    help="Directory to look for the image.parquet talltable data file.")
-    p.add_argument("--psf-path", default="psf",
+    p.add_argument("--psf-path", default="spherex_calibs/psf",
                    help="Directory to look for oversampled PSF model cubes.")
 
     return p
@@ -1072,6 +1085,8 @@ def main(argv=None):
 
     # Cutout size in detector pixels for extraction
     extract_px = 21
+    
+    failed = []
 
     for name, ra, dec in targets:
         all_results: List[ExtractionResult] = []
@@ -1094,6 +1109,7 @@ def main(argv=None):
         except:
             print("   PixelQuery failed. Try again later?")
             sleep(10)
+            failed.append(name)
             continue
         cutout_images = cutout_pixels_to_images(cutout_pixels,image_tab)
 
@@ -1140,6 +1156,12 @@ def main(argv=None):
             _spec_to_txt(all_results, txt_path)
         else:
             print("  No results to write.")
+            
+    if len(failed) > 0:
+        print("The following targets failed to download: ",end="")
+        for name in failed:
+            print(name+" ",end="")
+        print(".")
 
     return 0
 
