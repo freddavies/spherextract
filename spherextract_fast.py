@@ -149,50 +149,6 @@ def download_cutout_pixels(ra,dec,cutout_size_deg=0.05):
     print("Done.")
     return pixels
     
-#def cutout_pixels_to_images(pixels,image_tab):
-#    """
-#    Sort the bucket of pixels from talltable into individual images.
-#    """
-#    image_ids = np.unique(np.array(pixels['imageid']))
-#    images = []
-#    print("Sorting pixels into images...")
-#    for id in image_ids:
-#        m = np.array(pixels['imageid'])==id
-#        hp = np.array(pixels['hphigh'])[m]
-#        pixra, pixdec = healpy.pix2ang(2**22,hp,lonlat=True,nest=True)
-#        xind = np.array(pixels['row'])[m]
-#        yind = np.array(pixels['col'])[m]
-#        fluximg = np.zeros((xind.max()-xind.min()+1,yind.max()-yind.min()+1))
-#        fluximg[xind-xind.min(),yind-yind.min()] = np.array(pixels['flux'])[m]
-#        varimg = np.zeros((xind.max()-xind.min()+1,yind.max()-yind.min()+1))
-#        varimg[xind-xind.min(),yind-yind.min()] = np.array(pixels['variance'])[m]
-#        flagimg = np.zeros((xind.max()-xind.min()+1,yind.max()-yind.min()+1))
-#        flagimg[xind-xind.min(),yind-yind.min()] = np.array(pixels['flags'])[m]
-#        waveimg = np.zeros((xind.max()-xind.min()+1,yind.max()-yind.min()+1))
-#        waveimg[xind-xind.min(),yind-yind.min()] = np.array(pixels['wavelength'])[m]
-#        dwaveimg = np.zeros((xind.max()-xind.min()+1,yind.max()-yind.min()+1))
-#        dwaveimg[xind-xind.min(),yind-yind.min()] = np.array(pixels['bandwidth'])[m]
-#        raimg = np.zeros((xind.max()-xind.min()+1,yind.max()-yind.min()+1))
-#        raimg[xind-xind.min(),yind-yind.min()] = pixra
-#        decimg = np.zeros((xind.max()-xind.min()+1,yind.max()-yind.min()+1))
-#        decimg[xind-xind.min(),yind-yind.min()] = pixdec
-#        rowimg = np.zeros((xind.max()-xind.min()+1,yind.max()-yind.min()+1))
-#        rowimg[xind-xind.min(),yind-yind.min()] = xind
-#        colimg = np.zeros((xind.max()-xind.min()+1,yind.max()-yind.min()+1))
-#        colimg[xind-xind.min(),yind-yind.min()] = yind
-#        
-#        im = np.where(image_tab['imageid'] == id)[0][0]
-#        mjd_avg = 0.5*(np.array(image_tab['t_beg'])[im]+np.array(image_tab['t_end'])[im])
-#        obsid = np.array(image_tab['obsid'])[im]
-#        
-#        img_dict = {'ra':raimg, 'dec':decimg, 'row': rowimg, 'col': colimg,
-#                    'flux':fluximg, 'var':varimg, 'flags':flagimg, 'wave':waveimg, 'dwave':dwaveimg,
-#                    'detector_id':np.array(pixels['det'])[m][0], 'obsid':obsid, 'imageid':id,
-#                    'mjd_avg':mjd_avg}
-#        images.append(img_dict)
-#    print("Done.")
-#    return images
-    
 def cutout_pixels_to_images(pixels, image_tab):
     """
     Reconstruction of individual images from a big bucket of pixels.
@@ -429,7 +385,7 @@ _BAD_BITS_BCG = (
 
 
 # ---------------------------------------------------------------------------
-# Core: optimal extraction from a single FITS file
+# Core: optimal extraction from a single image
 # ---------------------------------------------------------------------------
 
 def optimal_extract(image, psf_cube_fits, name, ra, dec, fit_radius_px = 3.0,
@@ -578,7 +534,7 @@ def optimal_extract(image, psf_cube_fits, name, ra, dec, fit_radius_px = 3.0,
     dprint(f"  Target full-det pixel: x={xpix_fulldet:.3f}, y={ypix_fulldet:.3f}")
 
     # ================================================================
-    # 3. Cutout
+    # 3. Cutout (this is a bit redundant, will clean up later)
     # ================================================================
     cut_img = np.copy(img)
     cut_flags = np.copy(flags)
@@ -607,6 +563,7 @@ def optimal_extract(image, psf_cube_fits, name, ra, dec, fit_radius_px = 3.0,
     # e.g. sky emission lines or undercorrected dichroic effects etc.
     # So in some cases it may be preferable to construct a background model
     # which is some function of the spectral direction *only*
+    # (i.e. along the "row" direction? or "col"? one of those two)
     #linear_bcg = True
     #if linear_bcg:
         
@@ -781,8 +738,8 @@ def optimal_extract(image, psf_cube_fits, name, ra, dec, fit_radius_px = 3.0,
     # 11. Spectral WCS at target position
     # ================================================================
     
-    
-    # Use xcut/ycut and bilinearly interpolate from closeby pixels
+    # Use xcut/ycut and bilinearly interpolate from nearby pixels
+    # this is quite dangerous, so lots of checks to make sure nothing bad creeps in
     x1 = int(xcut); x2 = x1+1; y1 = int(ycut); y2 = y1+1
     try:
         if wave[y1,x1] == 0 or wave[y2,x1] == 0 or wave[y1,x2] == 0 or wave[y2,x2] == 0:
