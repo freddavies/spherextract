@@ -1093,6 +1093,7 @@ def main(argv=None):
             cutout_pixels = download_cutout_pixels(ra=ra,dec=dec,cutout_size_deg=args.cutout_size)
         except:
             print("   PixelQuery failed. Try again later?")
+            sleep(10)
             continue
         cutout_images = cutout_pixels_to_images(cutout_pixels,image_tab)
 
