@@ -67,7 +67,7 @@ from scipy import ndimage
 import talltable
 import healpy
 import pyarrow.parquet
-from scipy.interpolate import LinearNDInterpolator as linterp
+from time import sleep
 
 from IPython import embed
 
