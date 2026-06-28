@@ -1073,7 +1073,7 @@ def main(argv=None):
             #            O
             #
             # This will lose some pixels in the corners, but should work better in deep fields?
-            size = args.cutout_size*(2.0/3.0)
+            size = 0.6*args.cutout_size
             try:
                 # Should probably wrap all this up into a function for clarity
                 print("   Query 1 (0,0)")
