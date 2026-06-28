@@ -67,6 +67,7 @@ from scipy import ndimage
 import talltable
 import healpy
 import pyarrow.parquet
+import pyarrow
 from time import sleep
 
 from IPython import embed
@@ -137,10 +138,11 @@ def download_cutout_pixels(ra,dec,cutout_size_deg=0.05):
     Load the pixels corresponding to a small region around the target source.
     """
     radius = 60.0*cutout_size_deg/2+(6.15/60) # in arcmin
+    custom_mask = ~(_BAD_BITS | _BAD_BITS_BCG) # we actually want all the pixels, and will mask later on
     query = (
              talltable.PixelQuery(web=True)
              .disc(ra, dec, radius)
-             .flags(mask_known_source=False)
+             .flags(custom_mask=custom_mask)
              .with_wavelengths()
              .with_rowcoldet()
             )
@@ -245,7 +247,7 @@ def cutout_pixels_to_images(pixels, image_tab):
 
     print("Done.")
     return images
-
+    
 # Helper: WCS determination from constructed images
 def fit_affine_wcs(image,mask=None):
     """
@@ -939,6 +941,7 @@ def _build_parser():
     # Download options
     p.add_argument("--cutout-size", type=float, default=0.05, metavar="DEG",
                    help="Cutout size in degrees (default: 0.01 = 36 arcsec)")
+    # TODO: Reintroduce threading for talltable queries
 #    p.add_argument("--dl-threads", type=int, default=8,
 #                   help="Number of simultaneous downloads (default = 8)")
 
@@ -1061,10 +1064,39 @@ def main(argv=None):
         try:
             cutout_pixels = download_cutout_pixels(ra=ra,dec=dec,cutout_size_deg=args.cutout_size)
         except:
-            print("   PixelQuery failed. Try again with a smaller cutout?")
-            sleep(10)
-            failed.append(name)
-            continue
+            print("   PixelQuery failed. Trying again with a divide-and-conquer strategy...")
+            sleep(5)
+            # Try to acquire data with a cross-shape pattern of smaller overlapping sky patches:
+            #
+            #            O
+            #           OOO
+            #            O
+            #
+            # This will lose some pixels in the corners, but should work better in deep fields?
+            size = 0.6*args.cutout_size
+            try:
+                # Should probably wrap all this up into a function for clarity
+                print("   Query 1 (0,0)")
+                cutout_pixels1 = download_cutout_pixels(ra=ra,dec=dec,cutout_size_deg=size)
+                print("   Query 2 (1,0)")
+                cutout_pixels2 = download_cutout_pixels(ra=ra+size/2,dec=dec,cutout_size_deg=size)
+                print("   Query 3 (-1,0)")
+                cutout_pixels3 = download_cutout_pixels(ra=ra-size/2,dec=dec,cutout_size_deg=size)
+                print("   Query 4 (0,1)")
+                cutout_pixels4 = download_cutout_pixels(ra=ra,dec=dec+size/2,cutout_size_deg=size)
+                print("   Query 5 (0,-1)")
+                cutout_pixels5 = download_cutout_pixels(ra=ra,dec=dec-size/2,cutout_size_deg=size)
+                cutout_pixels_all = pyarrow.Table.concat_tables([cutout_pixels1,cutout_pixels2,cutout_pixels3,
+                                                       cutout_pixels4,cutout_pixels5])
+                ids = np.asarray(pixels['imageid'])
+                hps = np.asarray(pixels['hphigh'])
+                _,unique_idx = np.unique(np.vstack([ids,hps]).T,axis=0,return_index=True)
+                cutout_pixels = cutout_pixels_all[unique_idx]
+            except:
+                print("   PixelQuery failed yet again. Try reducing the primary cutout size.")
+                sleep(5)
+                failed.append(name)
+                continue
         cutout_images = cutout_pixels_to_images(cutout_pixels,image_tab)
 
         # ------------------------------------------------------------------
