@@ -196,9 +196,6 @@ def cutout_pixels_to_images(pixels, image_tab):
         start = start_indices[i]
         end   = start_indices[i + 1] if i < n_imgs - 1 else len(pix_ids)
 
-        if end - start < 10:
-            continue
-
         idx = sort_idx[start:end]       # original positions
         sl  = slice(start, end)         # positions in sorted arrays
 
@@ -1064,7 +1061,7 @@ def main(argv=None):
         try:
             cutout_pixels = download_cutout_pixels(ra=ra,dec=dec,cutout_size_deg=args.cutout_size)
         except:
-            print("   PixelQuery failed. Try again later?")
+            print("   PixelQuery failed. Try again with a smaller cutout?")
             sleep(10)
             failed.append(name)
             continue
