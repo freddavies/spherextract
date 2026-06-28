@@ -1065,8 +1065,8 @@ def main(argv=None):
             cutout_pixels = download_cutout_pixels(ra=ra,dec=dec,cutout_size_deg=args.cutout_size)
         except:
             print("   PixelQuery failed. Trying again with a divide-and-conquer strategy...")
-            sleep(2)
-            # Try to acquire data with a cross-shape pattern of smaller sky patches:
+            sleep(5)
+            # Try to acquire data with a cross-shape pattern of smaller overlapping sky patches:
             #
             #            O
             #           OOO
@@ -1076,10 +1076,15 @@ def main(argv=None):
             size = args.cutout_size*(2.0/3.0)
             try:
                 # Should probably wrap all this up into a function for clarity
+                print("   Query 1 (0,0)")
                 cutout_pixels1 = download_cutout_pixels(ra=ra,dec=dec,cutout_size_deg=size)
+                print("   Query 2 (1,0)")
                 cutout_pixels2 = download_cutout_pixels(ra=ra+size/2,dec=dec,cutout_size_deg=size)
+                print("   Query 3 (-1,0)")
                 cutout_pixels3 = download_cutout_pixels(ra=ra-size/2,dec=dec,cutout_size_deg=size)
+                print("   Query 4 (0,1)")
                 cutout_pixels4 = download_cutout_pixels(ra=ra,dec=dec+size/2,cutout_size_deg=size)
+                print("   Query 5 (0,-1)")
                 cutout_pixels5 = download_cutout_pixels(ra=ra,dec=dec-size/2,cutout_size_deg=size)
                 cutout_pixels_all = pyarrow.Table.concat_tables([cutout_pixels1,cutout_pixels2,cutout_pixels3,
                                                        cutout_pixels4,cutout_pixels5])
@@ -1088,7 +1093,7 @@ def main(argv=None):
                 _,unique_idx = np.unique(np.vstack([ids,hps]).T,axis=0,return_index=True)
                 cutout_pixels = cutout_pixels_all[unique_idx]
             except:
-                print("   PixelQuery failed again. Try reducing the primary cutout size.")
+                print("   PixelQuery failed yet again. Try reducing the primary cutout size.")
                 sleep(5)
                 failed.append(name)
                 continue
