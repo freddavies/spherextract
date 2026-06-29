@@ -1,12 +1,9 @@
 #!/usr/bin/env python
 """
-spherextract.py
+spherextract_fast.py
 
-Download SPHEREx cutouts from IRSA and extract photometry via analogy to
+Download SPHEREx pixels with talltable and extract photometry via analogy to
 optimal extraction (Horne 1986) using the official SPHEREx PSF model.
-
-Essentially a merger of spherex-tools/get_cutouts_spherex.py
-and spiff/single_fit.py, aided by Claude Sonnet 4.6
 
 The PSF model is assumed to be correct with a perfect position. 
 The flux is estimated by the inverse-variance-weighted matched filter:
@@ -26,18 +23,18 @@ until convergence or a maximum number of iterations.
 Usage examples
 --------------
 # Single target:
-python spherextract.py --ra 129.1827 --dec 0.914806 --name J0836p0054
+python spherextract_fast.py --ra 129.1827 --dec 0.914806 --name J0836p0054
 
 # Read targets from file (name ra dec columns):
-python spherextract.py --input targets.txt
+python spherextract_fast.py --input targets.txt
 
 # Save results to specific directory:
-python spherextract.py --input targets.txt --results-dir my_results/
+python spherextract_fast.py --input targets.txt --results-dir my_results/
 
 # Tune extraction:
-python spherextract.py --ra 129.1827 --dec 0.914806 \\
+python spherextract_fast.py --ra 129.1827 --dec 0.914806 \\
     --name J0836p0054 --fit-radius 4.0 --kappa 4.0 --max-iter 10 \\
-    --cutout-size 0.1 --search-radius 5 \\
+    --cutout-size 0.1 \\
     --results-dir results_J0836/
 """
 from __future__ import print_function, division
