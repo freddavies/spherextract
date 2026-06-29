@@ -66,8 +66,8 @@ from scipy import ndimage
 # talltable and related stuff
 import talltable
 import healpy
-import pyarrow.parquet
 import pyarrow
+import pyarrow.parquet
 from time import sleep
 
 from IPython import embed
@@ -1076,21 +1076,22 @@ def main(argv=None):
             size = 0.6*args.cutout_size
             try:
                 # Should probably wrap all this up into a function for clarity
-                print("   Query 1 (0,0)")
+                print("   Query 1/5 (0,0)")
                 cutout_pixels1 = download_cutout_pixels(ra=ra,dec=dec,cutout_size_deg=size)
-                print("   Query 2 (1,0)")
+                print("   Query 2/5 (1,0)")
                 cutout_pixels2 = download_cutout_pixels(ra=ra+size/2,dec=dec,cutout_size_deg=size)
-                print("   Query 3 (-1,0)")
+                print("   Query 3/5 (-1,0)")
                 cutout_pixels3 = download_cutout_pixels(ra=ra-size/2,dec=dec,cutout_size_deg=size)
-                print("   Query 4 (0,1)")
+                print("   Query 4/5 (0,1)")
                 cutout_pixels4 = download_cutout_pixels(ra=ra,dec=dec+size/2,cutout_size_deg=size)
-                print("   Query 5 (0,-1)")
+                print("   Query 5/5 (0,-1)")
                 cutout_pixels5 = download_cutout_pixels(ra=ra,dec=dec-size/2,cutout_size_deg=size)
                 cutout_pixels_all = pyarrow.Table.concat_tables([cutout_pixels1,cutout_pixels2,cutout_pixels3,
                                                        cutout_pixels4,cutout_pixels5])
                 ids = np.asarray(pixels['imageid'])
                 hps = np.asarray(pixels['hphigh'])
                 _,unique_idx = np.unique(np.vstack([ids,hps]).T,axis=0,return_index=True)
+                print("   Removing duplicate pixels")
                 cutout_pixels = cutout_pixels_all[unique_idx]
             except:
                 print("   PixelQuery failed yet again. Try reducing the primary cutout size.")
