@@ -560,8 +560,15 @@ def optimal_extract(image, psf_cube_fits, name, ra, dec, fit_radius_px = 3.0,
     # So in some cases it may be preferable to construct a background model
     # which is some function of the spectral direction *only*
     # (i.e. along the "row" direction? or "col"? one of those two)
-    #linear_bcg = True
-    #if linear_bcg:
+    linear_bkg = True
+    if linear_bkg:
+        bkg_rows = image['row'][good_bcg]-np.median(image['row'])
+        bkg_flux = cut_img[good_bcg]
+        bkg_wgts = 1.0/cut_var[good_bcg]
+        X = np.column_stack([bkg_rows, np.ones_like(bkg_rows)])
+        WX = X * bkg_wgts[:, None]
+        result = np.linalg.solve(WX.T @ X, WX.T @ bkg_flux)
+        bkg = result[1] + result[0]*(image['row']-np.median(image['row']))
         
     data = cut_img - bkg
     dprint(f"  Background: {bkg:.4g} MJy/sr (from {bkg_npix} pixels)")
