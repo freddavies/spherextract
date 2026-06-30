@@ -135,7 +135,7 @@ def download_cutout_pixels(ra,dec,cutout_size_deg=0.05):
     Load the pixels corresponding to a small region around the target source.
     """
     radius = 60.0*cutout_size_deg/2+(6.15/60) # in arcmin
-    custom_mask = ~(_BAD_BITS | _BAD_BITS_BCG) # we actually want all the pixels, and will mask later on
+    custom_mask = ~(_BAD_BITS | _BAD_BITS_BKG) # we actually want all the pixels, and will mask later on
     query = (
              talltable.PixelQuery(web=True)
              .disc(ra, dec, radius)
@@ -154,14 +154,20 @@ def cutout_pixels_to_images(pixels, image_tab):
     """
     # --- Extract pyarrow.table columns up front ---
     pix_ids   = np.asarray(pixels['imageid'])
-    all_row   = np.asarray(pixels['row'])
-    all_col   = np.asarray(pixels['col'])
-    all_flux  = np.asarray(pixels['flux'])
-    all_var   = np.asarray(pixels['variance'])
-    all_flag  = np.asarray(pixels['flags'])
-    all_wave  = np.asarray(pixels['wavelength'])
-    all_dwave = np.asarray(pixels['bandwidth'])
     all_hp    = np.asarray(pixels['hphigh'])
+    # Remove duplicate pixels (in case multiple pixel queries are combined ---
+    _,undup_idx = np.unique(np.vstack([pix_ids,all_hp]).T,axis=0,return_index=True)
+    print("   Removing duplicate pixels (if any)")
+    pix_ids   = pix_ids[undup_idx]
+    all_hp    = all_hp[undup_idx]
+    all_row   = np.asarray(pixels['row'])[undup_idx]
+    all_col   = np.asarray(pixels['col'])[undup_idx]
+    all_flux  = np.asarray(pixels['flux'])[undup_idx]
+    all_var   = np.asarray(pixels['variance'])[undup_idx]
+    all_flag  = np.asarray(pixels['flags'])[undup_idx]
+    all_wave  = np.asarray(pixels['wavelength'])[undup_idx]
+    all_dwave = np.asarray(pixels['bandwidth'])[undup_idx]
+    
     all_det   = np.asarray(pixels['det'])
 
     # --- Sort once by imageid to make groups contiguous ---
@@ -371,7 +377,7 @@ _BAD_BITS = (
 )
 
 # Additional bits to exclude when estimating the background
-_BAD_BITS_BCG = (
+_BAD_BITS_BKG = (
     _BAD_BITS
     | _bit(_MP["OVERFLOW"])
     | _bit(_MP["SOURCE"])
@@ -384,8 +390,9 @@ _BAD_BITS_BCG = (
 # Core: optimal extraction from a single image
 # ---------------------------------------------------------------------------
 
-def optimal_extract(image, psf_cube_fits, name, ra, dec, fit_radius_px = 3.0,
-                    kappa = 4.0, max_iter = 10, debug = False, show_figs = False,
+def optimal_extract(image, psf_cube_fits, name, ra, dec,
+                    fit_radius_px = 3.0, kappa = 4.0, max_iter = 10,
+                    linear_bkg = False, debug = False, show_figs = False,
                     save_figs = False, results_dir = None, no_masking = False):
     """
     Run 2D optimal extraction on one SPHEREx cutout image.
@@ -541,12 +548,12 @@ def optimal_extract(image, psf_cube_fits, name, ra, dec, fit_radius_px = 3.0,
     # ================================================================
     # 4. Background subtraction
     # ================================================================
-    mask_bcg = (flags.astype(np.uint32) & _BAD_BITS_BCG) != 0
-    good_bcg = (~mask_bcg) & np.isfinite(cut_img) & (~unused)
-    bkg_npix = int(np.sum(good_bcg))
+    mask_bkg = (flags.astype(np.uint32) & _BAD_BITS_BKG) != 0
+    good_bkg = (~mask_bkg) & np.isfinite(cut_img) & (~unused)
+    bkg_npix = int(np.sum(good_bkg))
 
     if bkg_npix >= 3:
-        bkg = float(np.median(cut_img[good_bcg]))
+        bkg = float(np.median(cut_img[good_bkg]))
     else:
         # fallback: ignore flags, use any finite pixel
         good_any = np.isfinite(cut_img)
@@ -554,17 +561,37 @@ def optimal_extract(image, psf_cube_fits, name, ra, dec, fit_radius_px = 3.0,
         bkg_npix = int(np.sum(good_any))
         dprint("  [WARN] Few good BCG pixels; using unmasked background estimate.")
         
-    # Should be able to do better than a simple median background.
-    # Generically, there can be background features which follow the spectral direction,
-    # e.g. sky emission lines or undercorrected dichroic effects etc.
-    # So in some cases it may be preferable to construct a background model
-    # which is some function of the spectral direction *only*
-    # (i.e. along the "row" direction? or "col"? one of those two)
-    #linear_bcg = True
-    #if linear_bcg:
-        
+    # Linear model for the background
+    # Basic weighted linear least squares for efficiency
+    if linear_bkg and np.sum(good_bkg) >= 10:
+        bkg_rows = image['row'][good_bkg]-np.median(image['row'])
+        bkg_flux = cut_img[good_bkg]
+        bkg_wgts = 1.0/cut_var[good_bkg]
+        X = np.column_stack([bkg_rows, np.ones_like(bkg_rows)])
+        WX = X * bkg_wgts[:, None]
+        try:
+            result = np.linalg.solve(WX.T @ X, WX.T @ bkg_flux)
+            bkg = result[1] + result[0]*(image['row']-np.median(image['row']))
+            
+            # Now do one round of clipping on the background pixels for robustness
+            outlier_bkg = np.abs((bkg-cut_img)/np.sqrt(cut_var)) > 5.0
+            good_bkg2 = good_bkg & ~outlier_bkg
+            # And repeat the background estimate
+            bkg_rows = image['row'][good_bkg2]-np.median(image['row'])
+            bkg_flux = cut_img[good_bkg2]
+            bkg_wgts = 1.0/cut_var[good_bkg2]
+            X = np.column_stack([bkg_rows, np.ones_like(bkg_rows)])
+            WX = X * bkg_wgts[:, None]
+            result = np.linalg.solve(WX.T @ X, WX.T @ bkg_flux)
+            bkg = result[1] + result[0]*(image['row']-np.median(image['row']))
+        except: # fallback to median
+            dprint("Linear background fit failed; falling back to median")
+        if np.sum(~np.isfinite(bkg)) > 0:
+            dprint("Linear background fit failed; falling back to median")
+            bkg = float(np.median(cut_img[good_bkg]))
+            
     data = cut_img - bkg
-    dprint(f"  Background: {bkg:.4g} MJy/sr (from {bkg_npix} pixels)")
+    dprint(f"  Background: {np.mean(bkg):.4g} MJy/sr (from {bkg_npix} pixels)")
 
     # ================================================================
     # 5. Select PSF zone
@@ -951,6 +978,8 @@ def _build_parser():
                    help="Maximum outlier-rejection iterations (default: 10)")
     p.add_argument("--no-masking", action="store_true",
                    help="Ignore flag-based pixel masking in the fit")
+    p.add_argument("--linear-bkg", action="store_true",
+                   help="Fit a linear model to the background instead of local median")
 
     # Output / display
     p.add_argument("--debug", action="store_true",
@@ -1083,13 +1112,8 @@ def main(argv=None):
                 cutout_pixels4 = download_cutout_pixels(ra=ra,dec=dec+size/2,cutout_size_deg=size)
                 print("   Query 5/5 (0,-1)")
                 cutout_pixels5 = download_cutout_pixels(ra=ra,dec=dec-size/2,cutout_size_deg=size)
-                cutout_pixels_all = pyarrow.Table.concat_tables([cutout_pixels1,cutout_pixels2,cutout_pixels3,
+                cutout_pixels = pyarrow.Table.concat_tables([cutout_pixels1,cutout_pixels2,cutout_pixels3,
                                                        cutout_pixels4,cutout_pixels5])
-                ids = np.asarray(pixels['imageid'])
-                hps = np.asarray(pixels['hphigh'])
-                _,unique_idx = np.unique(np.vstack([ids,hps]).T,axis=0,return_index=True)
-                print("   Removing duplicate pixels")
-                cutout_pixels = cutout_pixels_all[unique_idx]
             except:
                 print("   PixelQuery failed yet again. Try reducing the primary cutout size.")
                 sleep(5)
@@ -1111,6 +1135,7 @@ def main(argv=None):
                 fit_radius_px=args.fit_radius,
                 kappa=args.kappa,
                 max_iter=args.max_iter,
+                linear_bkg=args.linear_bkg,
                 debug=args.debug,
                 show_figs=args.show_figs,
                 save_figs=args.save_figs,
