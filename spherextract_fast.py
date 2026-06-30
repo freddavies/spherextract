@@ -135,7 +135,7 @@ def download_cutout_pixels(ra,dec,cutout_size_deg=0.05):
     Load the pixels corresponding to a small region around the target source.
     """
     radius = 60.0*cutout_size_deg/2+(6.15/60) # in arcmin
-    custom_mask = ~(_BAD_BITS | _BAD_BITS_BKG) # we actually want all the pixels, and will mask later on
+    custom_mask = ~(_BAD_BITS | _BAD_BITS_BKG | _BAD_BITS_MISC) # we actually want all the pixels, and will mask later on
     query = (
              talltable.PixelQuery(web=True)
              .disc(ra, dec, radius)
@@ -360,6 +360,9 @@ _MP = {
     "HOT": 10, "COLD": 11, "FULLSAMPLE": 12,
     "PHANMISS": 14, "NONLINEAR": 15, "PERSIST": 17,
     "OUTLIER": 19, "SOURCE": 21,
+    # New flags 2026 Jun
+    "GHOST": 22, "GHOST_EXT": 24, "BLOOM": 26,
+    "SNOWBALL": 27, "HALO": 28, "SATELLITE_HALO": 29
 }
 
 def _bit(n: int) -> int:
@@ -374,6 +377,8 @@ _BAD_BITS = (
     | _bit(_MP["COLD"])
     | _bit(_MP["NONLINEAR"])
     | _bit(_MP["PERSIST"])
+    | _bit(_MP["HALO"])
+    | _bit(_MP["SATELLITE_HALO"])
 )
 
 # Additional bits to exclude when estimating the background
@@ -383,6 +388,19 @@ _BAD_BITS_BKG = (
     | _bit(_MP["SOURCE"])
     | _bit(_MP["OUTLIER"])
     | _bit(_MP["TRANSIENT"])
+)
+
+# All other bits
+_BAD_BITS_MISC = (
+    _BAD_BITS
+    | _BAD_BITS_BKG
+    | _bit(_MP["DICHROIC"])
+    | _bit(_MP["FULLSAMPLE"])
+    | _bit(_MP["PHANMISS"])
+    | _bit(_MP["GHOST"])
+    | _bit(_MP["GHOST_EXT"])
+    | _bit(_MP["BLOOM"])
+    | _bit(_MP["SNOWBALL"])
 )
 
 
