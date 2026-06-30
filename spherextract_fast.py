@@ -154,14 +154,20 @@ def cutout_pixels_to_images(pixels, image_tab):
     """
     # --- Extract pyarrow.table columns up front ---
     pix_ids   = np.asarray(pixels['imageid'])
-    all_row   = np.asarray(pixels['row'])
-    all_col   = np.asarray(pixels['col'])
-    all_flux  = np.asarray(pixels['flux'])
-    all_var   = np.asarray(pixels['variance'])
-    all_flag  = np.asarray(pixels['flags'])
-    all_wave  = np.asarray(pixels['wavelength'])
-    all_dwave = np.asarray(pixels['bandwidth'])
     all_hp    = np.asarray(pixels['hphigh'])
+    # Remove duplicate pixels (in case multiple pixel queries are combined ---
+    _,undup_idx = np.unique(np.vstack([pix_ids,all_hp]).T,axis=0,return_index=True)
+    print("   Removing duplicate pixels (if any)")
+    pix_ids   = pix_ids[undup_idx]
+    all_hp    = all_hp[undup_idx]
+    all_row   = np.asarray(pixels['row'])[undup_idx]
+    all_col   = np.asarray(pixels['col'])[undup_idx]
+    all_flux  = np.asarray(pixels['flux'])[undup_idx]
+    all_var   = np.asarray(pixels['variance'])[undup_idx]
+    all_flag  = np.asarray(pixels['flags'])[undup_idx]
+    all_wave  = np.asarray(pixels['wavelength'])[undup_idx]
+    all_dwave = np.asarray(pixels['bandwidth'])[undup_idx]
+    
     all_det   = np.asarray(pixels['det'])
 
     # --- Sort once by imageid to make groups contiguous ---
@@ -554,24 +560,26 @@ def optimal_extract(image, psf_cube_fits, name, ra, dec, fit_radius_px = 3.0,
         bkg_npix = int(np.sum(good_any))
         dprint("  [WARN] Few good BCG pixels; using unmasked background estimate.")
         
-    # Should be able to do better than a simple median background.
-    # Generically, there can be background features which follow the spectral direction,
-    # e.g. sky emission lines or undercorrected dichroic effects etc.
-    # So in some cases it may be preferable to construct a background model
-    # which is some function of the spectral direction *only*
-    # (i.e. along the "row" direction? or "col"? one of those two)
+    # Linear model for the background
+    # Basic weighted linear least squares for efficiency
     linear_bkg = True
-    if linear_bkg:
+    if linear_bkg and np.sum(good_bcg) >= 10:
         bkg_rows = image['row'][good_bcg]-np.median(image['row'])
         bkg_flux = cut_img[good_bcg]
         bkg_wgts = 1.0/cut_var[good_bcg]
         X = np.column_stack([bkg_rows, np.ones_like(bkg_rows)])
         WX = X * bkg_wgts[:, None]
-        result = np.linalg.solve(WX.T @ X, WX.T @ bkg_flux)
-        bkg = result[1] + result[0]*(image['row']-np.median(image['row']))
-        
+        try:
+            result = np.linalg.solve(WX.T @ X, WX.T @ bkg_flux)
+            bkg = result[1] + result[0]*(image['row']-np.median(image['row']))
+        except: # fallback to median
+            dprint("Linear background fit failed; falling back to median")
+        if np.sum(~np.isfinite(bkg)) > 0:
+            dprint("Linear background fit failed; falling back to median")
+            bkg = float(np.median(cut_img[good_bcg]))
+            
     data = cut_img - bkg
-    dprint(f"  Background: {bkg:.4g} MJy/sr (from {bkg_npix} pixels)")
+    dprint(f"  Background: {np.mean(bkg):.4g} MJy/sr (from {bkg_npix} pixels)")
 
     # ================================================================
     # 5. Select PSF zone
@@ -1090,13 +1098,8 @@ def main(argv=None):
                 cutout_pixels4 = download_cutout_pixels(ra=ra,dec=dec+size/2,cutout_size_deg=size)
                 print("   Query 5/5 (0,-1)")
                 cutout_pixels5 = download_cutout_pixels(ra=ra,dec=dec-size/2,cutout_size_deg=size)
-                cutout_pixels_all = pyarrow.Table.concat_tables([cutout_pixels1,cutout_pixels2,cutout_pixels3,
+                cutout_pixels = pyarrow.Table.concat_tables([cutout_pixels1,cutout_pixels2,cutout_pixels3,
                                                        cutout_pixels4,cutout_pixels5])
-                ids = np.asarray(pixels['imageid'])
-                hps = np.asarray(pixels['hphigh'])
-                _,unique_idx = np.unique(np.vstack([ids,hps]).T,axis=0,return_index=True)
-                print("   Removing duplicate pixels")
-                cutout_pixels = cutout_pixels_all[unique_idx]
             except:
                 print("   PixelQuery failed yet again. Try reducing the primary cutout size.")
                 sleep(5)
