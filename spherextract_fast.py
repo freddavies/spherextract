@@ -966,6 +966,7 @@ def _build_parser():
                    help="Maximum outlier-rejection iterations (default: 10)")
     p.add_argument("--no-masking", action="store_true",
                    help="Ignore flag-based pixel masking in the fit")
+    # TODO: Add argument to allow for different background estimation strategies
 
     # Output / display
     p.add_argument("--debug", action="store_true",
