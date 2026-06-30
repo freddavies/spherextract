@@ -135,7 +135,7 @@ def download_cutout_pixels(ra,dec,cutout_size_deg=0.05):
     Load the pixels corresponding to a small region around the target source.
     """
     radius = 60.0*cutout_size_deg/2+(6.15/60) # in arcmin
-    custom_mask = ~(_BAD_BITS | _BAD_BITS_BCG) # we actually want all the pixels, and will mask later on
+    custom_mask = ~(_BAD_BITS | _BAD_BITS_BKG) # we actually want all the pixels, and will mask later on
     query = (
              talltable.PixelQuery(web=True)
              .disc(ra, dec, radius)
@@ -377,7 +377,7 @@ _BAD_BITS = (
 )
 
 # Additional bits to exclude when estimating the background
-_BAD_BITS_BCG = (
+_BAD_BITS_BKG = (
     _BAD_BITS
     | _bit(_MP["OVERFLOW"])
     | _bit(_MP["SOURCE"])
@@ -547,12 +547,12 @@ def optimal_extract(image, psf_cube_fits, name, ra, dec, fit_radius_px = 3.0,
     # ================================================================
     # 4. Background subtraction
     # ================================================================
-    mask_bcg = (flags.astype(np.uint32) & _BAD_BITS_BCG) != 0
-    good_bcg = (~mask_bcg) & np.isfinite(cut_img) & (~unused)
-    bkg_npix = int(np.sum(good_bcg))
+    mask_bkg = (flags.astype(np.uint32) & _BAD_BITS_BKG) != 0
+    good_bkg = (~mask_bkg) & np.isfinite(cut_img) & (~unused)
+    bkg_npix = int(np.sum(good_bkg))
 
     if bkg_npix >= 3:
-        bkg = float(np.median(cut_img[good_bcg]))
+        bkg = float(np.median(cut_img[good_bkg]))
     else:
         # fallback: ignore flags, use any finite pixel
         good_any = np.isfinite(cut_img)
@@ -563,20 +563,32 @@ def optimal_extract(image, psf_cube_fits, name, ra, dec, fit_radius_px = 3.0,
     # Linear model for the background
     # Basic weighted linear least squares for efficiency
     linear_bkg = True
-    if linear_bkg and np.sum(good_bcg) >= 10:
-        bkg_rows = image['row'][good_bcg]-np.median(image['row'])
-        bkg_flux = cut_img[good_bcg]
-        bkg_wgts = 1.0/cut_var[good_bcg]
+    if linear_bkg and np.sum(good_bkg) >= 10:
+        bkg_rows = image['row'][good_bkg]-np.median(image['row'])
+        bkg_flux = cut_img[good_bkg]
+        bkg_wgts = 1.0/cut_var[good_bkg]
         X = np.column_stack([bkg_rows, np.ones_like(bkg_rows)])
         WX = X * bkg_wgts[:, None]
         try:
+            result = np.linalg.solve(WX.T @ X, WX.T @ bkg_flux)
+            bkg = result[1] + result[0]*(image['row']-np.median(image['row']))
+            
+            # Now do one round of clipping on the background pixels for robustness
+            outlier_bkg = np.abs((bkg[good_bkg]-cut_img[good_bkg])/np.sqrt(cut_var[good_bkg])) > 3.0
+            good_bkg2 = good_bkg & ~outlier_bkg
+            # And repeat the background estimate
+            bkg_rows = image['row'][good_bkg2]-np.median(image['row'])
+            bkg_flux = cut_img[good_bkg2]
+            bkg_wgts = 1.0/cut_var[good_bkg2]
+            X = np.column_stack([bkg_rows, np.ones_like(bkg_rows)])
+            WX = X * bkg_wgts[:, None]
             result = np.linalg.solve(WX.T @ X, WX.T @ bkg_flux)
             bkg = result[1] + result[0]*(image['row']-np.median(image['row']))
         except: # fallback to median
             dprint("Linear background fit failed; falling back to median")
         if np.sum(~np.isfinite(bkg)) > 0:
             dprint("Linear background fit failed; falling back to median")
-            bkg = float(np.median(cut_img[good_bcg]))
+            bkg = float(np.median(cut_img[good_bkg]))
             
     data = cut_img - bkg
     dprint(f"  Background: {np.mean(bkg):.4g} MJy/sr (from {bkg_npix} pixels)")
