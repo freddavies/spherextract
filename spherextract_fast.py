@@ -390,8 +390,9 @@ _BAD_BITS_BKG = (
 # Core: optimal extraction from a single image
 # ---------------------------------------------------------------------------
 
-def optimal_extract(image, psf_cube_fits, name, ra, dec, fit_radius_px = 3.0,
-                    kappa = 4.0, max_iter = 10, debug = False, show_figs = False,
+def optimal_extract(image, psf_cube_fits, name, ra, dec,
+                    fit_radius_px = 3.0, kappa = 4.0, max_iter = 10,
+                    linear_bkg = False, debug = False, show_figs = False,
                     save_figs = False, results_dir = None, no_masking = False):
     """
     Run 2D optimal extraction on one SPHEREx cutout image.
@@ -562,7 +563,6 @@ def optimal_extract(image, psf_cube_fits, name, ra, dec, fit_radius_px = 3.0,
         
     # Linear model for the background
     # Basic weighted linear least squares for efficiency
-    linear_bkg = True
     if linear_bkg and np.sum(good_bkg) >= 10:
         bkg_rows = image['row'][good_bkg]-np.median(image['row'])
         bkg_flux = cut_img[good_bkg]
@@ -574,7 +574,7 @@ def optimal_extract(image, psf_cube_fits, name, ra, dec, fit_radius_px = 3.0,
             bkg = result[1] + result[0]*(image['row']-np.median(image['row']))
             
             # Now do one round of clipping on the background pixels for robustness
-            outlier_bkg = np.abs((bkg[good_bkg]-cut_img[good_bkg])/np.sqrt(cut_var[good_bkg])) > 3.0
+            outlier_bkg = np.abs((bkg-cut_img)/np.sqrt(cut_var)) > 5.0
             good_bkg2 = good_bkg & ~outlier_bkg
             # And repeat the background estimate
             bkg_rows = image['row'][good_bkg2]-np.median(image['row'])
@@ -978,7 +978,8 @@ def _build_parser():
                    help="Maximum outlier-rejection iterations (default: 10)")
     p.add_argument("--no-masking", action="store_true",
                    help="Ignore flag-based pixel masking in the fit")
-    # TODO: Add argument to allow for different background estimation strategies
+    p.add_argument("--linear-bkg", action="store_true",
+                   help="Fit a linear model to the background instead of local median")
 
     # Output / display
     p.add_argument("--debug", action="store_true",
@@ -1134,6 +1135,7 @@ def main(argv=None):
                 fit_radius_px=args.fit_radius,
                 kappa=args.kappa,
                 max_iter=args.max_iter,
+                linear_bkg=args.linear_bkg,
                 debug=args.debug,
                 show_figs=args.show_figs,
                 save_figs=args.save_figs,
