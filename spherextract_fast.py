@@ -1130,7 +1130,7 @@ def main(argv=None):
                 cutout_pixels4 = download_cutout_pixels(ra=ra,dec=dec+size/2,cutout_size_deg=size)
                 print("   Query 5/5 (0,-1)")
                 cutout_pixels5 = download_cutout_pixels(ra=ra,dec=dec-size/2,cutout_size_deg=size)
-                cutout_pixels = pyarrow.Table.concat_tables([cutout_pixels1,cutout_pixels2,cutout_pixels3,
+                cutout_pixels = pyarrow.concat_tables([cutout_pixels1,cutout_pixels2,cutout_pixels3,
                                                        cutout_pixels4,cutout_pixels5])
             except:
                 print("   PixelQuery failed yet again. Try reducing the primary cutout size.")
