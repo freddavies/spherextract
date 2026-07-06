@@ -148,7 +148,7 @@ def download_cutout_pixels(ra,dec,cutout_size_deg=0.05):
     print("Done.")
     return pixels
     
-def cutout_pixels_to_images(pixels, image_tab):
+def cutout_pixels_to_images(pixels, image_tab, ra, dec, cutout_size):
     """
     Reconstruction of individual images from a big bucket of pixels.
     """
@@ -169,7 +169,7 @@ def cutout_pixels_to_images(pixels, image_tab):
     all_dwave = np.asarray(pixels['bandwidth'])[undup_idx]
     
     all_det   = np.asarray(pixels['det'])
-
+    
     # --- Sort once by imageid to make groups contiguous ---
     sort_idx    = np.argsort(pix_ids, kind='stable')
     sorted_ids  = pix_ids[sort_idx]
@@ -192,6 +192,16 @@ def cutout_pixels_to_images(pixels, image_tab):
         2**22, all_hp[sort_idx], lonlat=True, nest=True
     )
     # all_ra / all_dec are now aligned with sort_idx order
+    
+    # If RA ~ 0, then we might run into wrapping issues with the WCS
+    # Rather than do something sophisticated, we pretend RA can go negative
+    wrap = (ra < cutout_size) | (ra > 360.0-cutout_size)
+    if wrap: # we gotta wrap it up
+        if ra > 0: # object is on the positive side
+            all_ra[all_ra>360-2*cutout_size] -= 360.0
+        else: # object is on the "negative" side
+            all_ra[all_ra<2*cutout_size] += 360.0
+
 
     images = []
     n_imgs = len(unique_ids)
@@ -816,8 +826,6 @@ def optimal_extract(image, psf_cube_fits, name, ra, dec,
             save_or_show_fn=_save_or_show,
         )
 
-    hdul.close()
-
     return ExtractionResult(
         name=name,
         input_ra_deg=float(ra),
@@ -1082,11 +1090,8 @@ def main(argv=None):
     # Load in table of all SPHEREx image metadata
     image_tab = pyarrow.parquet.read_table(os.path.join(args.image_tab_path,"image.parquet"))
     # Load in PSF model cubes
-    # psf_cubes = [fits.open(os.path.join(args.psf_path,f'average_psf_D{ii}_spx_cal-psf-v5-2026-082.fits')) for ii in range(1,7)]
+    psf_cubes = [fits.open(os.path.join(args.psf_path,f'average_psf_D{ii}_spx_cal-psf-v5-2026-082.fits')) for ii in range(1,7)]
 
-    # Cutout size in detector pixels for extraction
-    extract_px = 21
-    
     failed = []
 
     for name, ra, dec in targets:
@@ -1137,7 +1142,8 @@ def main(argv=None):
                 sleep(5)
                 failed.append(name)
                 continue
-        cutout_images = cutout_pixels_to_images(cutout_pixels,image_tab)
+        
+        cutout_images = cutout_pixels_to_images(cutout_pixels,image_tab,ra,dec,args.cutout_size)
 
         # ------------------------------------------------------------------
         # Step 2: optimal extraction from each cutout
@@ -1146,7 +1152,7 @@ def main(argv=None):
             det = image['detector_id']
             result = optimal_extract(
                 image=image,
-                psf_cube_fits=fits.open(os.path.join(args.psf_path,f'average_psf_D{det}_spx_cal-psf-v5-2026-082.fits')),
+                psf_cube_fits=psf_cubes[det-1],
                 name=name,
                 ra=ra,
                 dec=dec,
