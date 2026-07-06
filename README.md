@@ -6,8 +6,8 @@ AI-aided synthesis of the cutout download machinery from Eduardo Bañados' [sphe
 Update 25.06.2026: now with experimental support for talltable, enabling much faster data downloads.
 
 Four scripts are provided: 
+- `spherextract_fast.py`, **NEW** a much faster version of the single-object tool that uses [talltable](https://github.com/cmhainje/talltable/) to download the data. Updates to the extraction or other parts of the code will generally be focused here, but may eventually trickle down to the rest.
 - `spherextract.py`, a standalone single-object tool
-- `spherextract_fast.py`, **NEW** a much faster version of the single-object tool that uses [talltable](https://github.com/cmhainje/talltable/) to download the data.
 - `spherextract_two.py`, which attempts to deblend two nearby sources
 - `spherextract_three.py`, which attempts to deblend three nearby sources
 
@@ -35,11 +35,9 @@ Download the cutouts for the lensed quasar J1330-0905 to the default directory `
 
 The `spherextract_three.py` tool has a similar syntax, but with an additional ra3, dec3, name3.
 
-There are many other command line options, run either script with `-h` to take a look.
+There are many other command line options, run any of the scripts with `-h` to take a look.
 
 # Known issues
-
-- Background estimation is performed via the median pixel flux in regions with the proper SPHEREx mask bits. This may fail in particularly crowded regions.
 
 - The single-object tool assumes a point-source morphology for the target. Extended sources may be supported in the future.
 
