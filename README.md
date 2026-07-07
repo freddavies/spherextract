@@ -41,4 +41,8 @@ There are many other command line options, run any of the scripts with `-h` to t
 
 - The single-object tool assumes a point-source morphology for the target. Extended sources may be supported in the future.
 
-- Support for more than three objects will be implemented in the future using a straightforward extrapolation of the least-squares method in the two- and three-object tools. I just have to come up with a reasonable data model, it is kind of a pain.
+- Support for more than three objects will be implemented in the future using a straightforward extrapolation of the least-squares method in the two- and three-object tools. I just have to come up with a reasonable data model, it is kind of a pain. Multi-object modes will be merged into the fast code in due time.
+
+- The default median background is sometimes inaccurate, particularly in the vicinity of sky lines (He I 1.08 micron). A linear background model can be used in this case with `--linear-bkg`.
+
+- The talltable queries can fail if your current internet connection is not fast enough to download the data in time. 
