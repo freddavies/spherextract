@@ -402,9 +402,7 @@ _BAD_BITS_BKG = (
 
 # All other bits
 _BAD_BITS_MISC = (
-    _BAD_BITS
-    | _BAD_BITS_BKG
-    | _bit(_MP["DICHROIC"])
+    _bit(_MP["DICHROIC"])
     | _bit(_MP["FULLSAMPLE"])
     | _bit(_MP["PHANMISS"])
     | _bit(_MP["GHOST"])
