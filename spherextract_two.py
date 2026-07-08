@@ -842,6 +842,8 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("--cutout-size", type=float, default=0.05, metavar="DEG",
                    help="Cutout download size in degrees (default: 0.05)")
     p.add_argument("--overwrite", action="store_true")
+    p.add_argument("--dl-threads", type=int, default=8,
+               help="Number of simultaneous downloads (default = 8)")
 
     # Extraction
     p.add_argument("--fit-radius", type=float, default=4.0, metavar="PX",
@@ -895,6 +897,7 @@ def main(argv=None) -> int:
                 search_radius_arcsec=args.search_radius,
                 cutout_size_deg=args.cutout_size,
                 overwrite=args.overwrite,
+                max_workers=args.dl_threads,
             )
         else:
             pattern = os.path.join(args.fits_dir, f"{name1}_cutout_*.fits")
