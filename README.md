@@ -1,9 +1,9 @@
-# spherextract
+# spherextract - development branch
 Download SPHEREx images and "optimally" extract spectrophotometry of point sources.
 
 AI-aided synthesis of the cutout download machinery from Eduardo Bañados' [spherex-tools](https://github.com/banados/spherex-tools/) with the PSF downsampling code from Jonathan Gagné's [SPIFF](https://github.com/jgagneastro/SPIFF) (see also: https://arxiv.org/abs/2604.22012). As I personally know very little about doing photometry on images, the flux extraction is performed using an analogy of optimal extraction ([Horne 1986](https://ui.adsabs.harvard.edu/abs/1986PASP...98..609H/abstract)) from spectroscopy analysis, effectively a matched filter with outlier rejection. Provided that the PSF model and variance maps are accurate, and the target is a point source, it should produce results vaguely similar to the IRSA Spectrophotometry Tool.
 
-Update 25.06.2026: now with experimental support for talltable, enabling much faster data downloads.
+Update 25.06.2026: now with experimental support for talltable, enabling much faster data downloads. **Please contact the developer (davies@mpia.de) if you are using this version for science.**
 
 Four scripts are provided: 
 - `spherextract_fast.py`, **NEW** a much faster version of the single-object tool that uses [talltable](https://github.com/cmhainje/talltable/) to download the data. Updates to the extraction or other parts of the code will generally be focused here, but may eventually trickle down to the rest.
