@@ -3,10 +3,7 @@ Download SPHEREx images and "optimally" extract spectrophotometry of point sourc
 
 AI-aided synthesis of the cutout download machinery from Eduardo Bañados' [spherex-tools](https://github.com/banados/spherex-tools/) with the PSF downsampling code from Jonathan Gagné's [SPIFF](https://github.com/jgagneastro/SPIFF) (see also: https://arxiv.org/abs/2604.22012). As I personally know very little about doing photometry on images, the flux extraction is performed using an analogy of optimal extraction ([Horne 1986](https://ui.adsabs.harvard.edu/abs/1986PASP...98..609H/abstract)) from spectroscopy analysis, effectively a matched filter with outlier rejection. Provided that the PSF model and variance maps are accurate, and the target is a point source, it should produce results vaguely similar to the IRSA Spectrophotometry Tool.
 
-Update 25.06.2026: now with experimental support for talltable, enabling much faster data downloads.
-
-Four scripts are provided: 
-- `spherextract_fast.py`, **NEW** a much faster version of the single-object tool that uses [talltable](https://github.com/cmhainje/talltable/) to download the data. Updates to the extraction or other parts of the code will generally be focused here, but may eventually trickle down to the rest.
+Three scripts are provided: 
 - `spherextract.py`, a standalone single-object tool
 - `spherextract_two.py`, which attempts to deblend two nearby sources
 - `spherextract_three.py`, which attempts to deblend three nearby sources
@@ -41,8 +38,6 @@ There are many other command line options, run any of the scripts with `-h` to t
 
 - The single-object tool assumes a point-source morphology for the target. Extended sources may be supported in the future.
 
-- Support for more than three objects will be implemented in the future using a straightforward extrapolation of the least-squares method in the two- and three-object tools. I just have to come up with a reasonable data model, it is kind of a pain. Multi-object modes will be merged into the fast code in due time.
+- Support for more than three objects will be implemented in the future using a straightforward extrapolation of the least-squares method in the two- and three-object tools. I just have to come up with a reasonable data model, it is kind of a pain.
 
-- The default median background is sometimes inaccurate, particularly in the vicinity of sky lines (He I 1.08 micron). A linear background model can be used in this case with `--linear-bkg`.
-
-- The talltable queries can fail if your current internet connection is not fast enough to download the data in time. 
+- The median background is sometimes inaccurate, particularly in the vicinity of sky lines (e.g. He I 1.083 micron).
