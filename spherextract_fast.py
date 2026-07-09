@@ -1126,12 +1126,12 @@ def main(argv=None):
             sleep(3)
             try:
                 nwv1234 = 16
-                wvmin1234 = 0.732
+                wvmin1234 = 0.733
                 wvmax1234 = 3.811
                 
                 nwv56 = 8
                 wvmin56 = 3.809
-                wvmax56 = 5.010
+                wvmax56 = 5.015
                 
                 cutout_pixels_wv = [None for ii in range(nwv1234+nwv56)]
                 
