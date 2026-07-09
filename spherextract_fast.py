@@ -130,19 +130,30 @@ class ExtractionResult:
 # Helpers: Talltable processing
 # ---------------------------------------------------------------------------
 
-def download_cutout_pixels(ra,dec,cutout_size_deg=0.05):
+def download_cutout_pixels(ra,dec,cutout_size_deg=0.05,wvbounds=None):
     """
     Load the pixels corresponding to a small region around the target source.
     """
     radius = 60.0*cutout_size_deg/2+(6.15/60) # in arcmin
     custom_mask = ~(_BAD_BITS | _BAD_BITS_BKG | _BAD_BITS_MISC) # we actually want all the pixels, and will mask later on
-    query = (
-             talltable.PixelQuery(web=True)
-             .disc(ra, dec, radius)
-             .flags(custom_mask=custom_mask)
-             .with_wavelengths()
-             .with_rowcoldet()
-            )
+    if wvbounds is None:
+        query = (
+                 talltable.PixelQuery(web=True)
+                 .disc(ra, dec, radius)
+                 .flags(custom_mask=custom_mask)
+                 .with_wavelengths()
+                 .with_rowcoldet()
+                )
+    else:
+        wvmin, wvmax = wvbounds
+        query = (
+                 talltable.PixelQuery(web=True)
+                 .disc(ra, dec, radius)
+                 .flags(custom_mask=custom_mask)
+                 .wavelength(wvmin, wvmax)
+                 .with_wavelengths()
+                 .with_rowcoldet()
+                )
     print("Executing talltable query...")
     pixels = query.execute()
     print("Done.")
@@ -1111,30 +1122,32 @@ def main(argv=None):
         try:
             cutout_pixels = download_cutout_pixels(ra=ra,dec=dec,cutout_size_deg=args.cutout_size)
         except:
-            print("   PixelQuery failed. Trying again with a divide-and-conquer strategy...")
-            sleep(5)
-            # Try to acquire data with a cross-shape pattern of smaller overlapping sky patches:
-            #
-            #            O
-            #           OOO
-            #            O
-            #
-            # This will lose some pixels in the corners, but should work better in deep fields?
-            size = 0.6*args.cutout_size
+            print("   PixelQuery failed. Trying again in wavelength chunks...")
+            sleep(3)
             try:
-                # Should probably wrap all this up into a function for clarity
-                print("   Query 1/5 (0,0)")
-                cutout_pixels1 = download_cutout_pixels(ra=ra,dec=dec,cutout_size_deg=size)
-                print("   Query 2/5 (1,0)")
-                cutout_pixels2 = download_cutout_pixels(ra=ra+size/2,dec=dec,cutout_size_deg=size)
-                print("   Query 3/5 (-1,0)")
-                cutout_pixels3 = download_cutout_pixels(ra=ra-size/2,dec=dec,cutout_size_deg=size)
-                print("   Query 4/5 (0,1)")
-                cutout_pixels4 = download_cutout_pixels(ra=ra,dec=dec+size/2,cutout_size_deg=size)
-                print("   Query 5/5 (0,-1)")
-                cutout_pixels5 = download_cutout_pixels(ra=ra,dec=dec-size/2,cutout_size_deg=size)
-                cutout_pixels = pyarrow.concat_tables([cutout_pixels1,cutout_pixels2,cutout_pixels3,
-                                                       cutout_pixels4,cutout_pixels5])
+                nwv1234 = 16
+                wvmin1234 = 0.732
+                wvmax1234 = 3.811
+                
+                nwv56 = 16
+                wvmin56 = 3.809
+                wvmax56 = 5.010
+                
+                cutout_pixels_wv = [None for ii in range(nwv1234+nwv56)]
+                
+                wvbins = 10**np.linspace(np.log10(wvmin1234),np.log10(wvmax1234),nwv1234+1)
+                for ii in range(nwv1234):
+                    print(f"   Query {ii+1}/{nwv1234+nwv56}")
+                    cutout_pixels_wv[ii] = download_cutout_pixels(ra=ra,dec=dec,cutout_size_deg=args.cutout_size,
+                                                                  wvbounds=[wvbins[ii],wvbins[ii+1]])
+                 
+                wvbins = 10**np.linspace(np.log10(wvmin56),np.log10(wvmax56),nwv56+1)
+                for ii in range(nwv56):
+                    print(f"   Query {nwv1234+ii+1}/{nwv1234+nwv56}")
+                    cutout_pixels_wv[nwv1234+ii] = download_cutout_pixels(ra=ra,dec=dec,cutout_size_deg=args.cutout_size,
+                                                                  wvbounds=[wvbins[ii],wvbins[ii+1]])
+                                                                  
+                cutout_pixels = pyarrow.concat_tables(cutout_pixels_wv)
             except:
                 print("   PixelQuery failed yet again. Try reducing the primary cutout size.")
                 sleep(5)
