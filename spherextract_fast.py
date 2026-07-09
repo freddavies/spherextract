@@ -1129,7 +1129,7 @@ def main(argv=None):
                 wvmin1234 = 0.732
                 wvmax1234 = 3.811
                 
-                nwv56 = 16
+                nwv56 = 8
                 wvmin56 = 3.809
                 wvmax56 = 5.010
                 
