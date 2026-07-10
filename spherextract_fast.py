@@ -41,11 +41,9 @@ import argparse
 import os
 import sys
 from dataclasses import asdict, dataclass
-from math import pi
 from pathlib import Path
 from typing import Dict, List, Optional, Any
 
-import astropy.units as u
 import numpy as np
 from astropy.io import ascii, fits
 from scipy import ndimage
