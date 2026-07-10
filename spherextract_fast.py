@@ -166,7 +166,7 @@ def cutout_pixels_to_images(pixels, image_tab, ra, dec, cutout_size):
     all_wave  = np.asarray(pixels['wavelength'])[undup_idx]
     all_dwave = np.asarray(pixels['bandwidth'])[undup_idx]
     
-    all_det   = np.asarray(pixels['det'])
+    all_det   = np.asarray(pixels['det'])[undup_idx]
     
     # --- Sort once by imageid to make groups contiguous ---
     sort_idx    = np.argsort(pix_ids, kind='stable')
