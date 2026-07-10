@@ -37,8 +37,6 @@ python spherextract_fast.py --ra 129.1827 --dec 0.914806 \\
     --cutout-size 0.1 \\
     --results-dir results_J0836/
 """
-from __future__ import print_function, division
-
 import argparse
 import os
 import sys
@@ -46,21 +44,12 @@ from dataclasses import asdict, dataclass
 from math import pi
 from pathlib import Path
 from typing import Dict, List, Optional, Any
-from http.client import IncompleteRead
-from urllib.error import HTTPError
-from urllib.request import urlopen
 
 import astropy.units as u
 import numpy as np
-from astropy.coordinates import SkyCoord
 from astropy.io import ascii, fits
-from astropy.nddata import Cutout2D
-from astropy.nddata.utils import NoOverlapError
-from astropy.wcs import WCS
-from astroquery.ipac.irsa import Irsa
 from scipy import ndimage
 
-# talltable and related stuff
 import talltable
 import healpy
 import pyarrow
@@ -1003,6 +992,8 @@ def _build_parser():
     # TODO: Reintroduce threading for talltable queries
 #    p.add_argument("--dl-threads", type=int, default=8,
 #                   help="Number of simultaneous downloads (default = 8)")
+    p.add_argument("--nchunks", type=int, default=2,
+                   help="Number of wavelength chunks to divide detectors in case of PixelQuery failure")
 
     # Extraction options
     p.add_argument("--fit-radius", type=float, default=4.0, metavar="PX",
@@ -1099,7 +1090,7 @@ def main(argv=None):
     # Load in table of all SPHEREx image metadata
     image_tab = pyarrow.parquet.read_table(os.path.join(args.image_tab_path,"image.parquet"))
     # Load in PSF model cubes
-    psf_cubes = [fits.open(os.path.join(args.psf_path,f'average_psf_D{ii}_spx_cal-psf-v5-2026-082.fits')) for ii in range(1,7)]
+    psf_cubes = [fits.open(os.path.join(args.psf_path,f'average_psf_D{ii+1}_spx_cal-psf-v5-2026-082.fits')) for ii in range(6)]
 
     failed = []
 
@@ -1122,14 +1113,14 @@ def main(argv=None):
         try:
             cutout_pixels = download_cutout_pixels(ra=ra,dec=dec,cutout_size_deg=args.cutout_size)
         except:
-            print("   PixelQuery failed. Trying again in wavelength chunks...")
+            print(f"   PixelQuery failed. Trying again in {6*args.nchunks} wavelength chunks...")
             sleep(3)
             try:
-                nwv1234 = 16
+                nwv1234 = 4*args.nchunks
                 wvmin1234 = 0.733
                 wvmax1234 = 3.811
                 
-                nwv56 = 8
+                nwv56 = 2*args.nchunks
                 wvmin56 = 3.809
                 wvmax56 = 5.015
                 
@@ -1149,7 +1140,7 @@ def main(argv=None):
                                                                   
                 cutout_pixels = pyarrow.concat_tables(cutout_pixels_wv)
             except:
-                print("   PixelQuery failed yet again. Try reducing the primary cutout size.")
+                print("   PixelQuery failed yet again. Try increasing --nchunks or reducing the primary cutout size.")
                 sleep(5)
                 failed.append(name)
                 continue
