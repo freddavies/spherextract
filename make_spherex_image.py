@@ -68,12 +68,17 @@ for ii in range(nwv56):
                                                   
 pix = pyarrow.concat_tables(cutout_pixels_wv)
 
-flux = np.asarray(pix['flux'])
-var = np.asarray(pix['variance'])
-wave = np.asarray(pix['wavelength'])
-imgids = np.asarray(pix['imageid'])
+ra,dec = healpy.pix2ang(2**22,np.asarray(pix['hphigh']),lonlat=True,nest=True)
+#keep = (ra > ra0-0.13/np.cos(dec0*np.pi/180)) & (ra < ra0+0.13/np.cos(dec0*np.pi/180)) & (dec > dec0-0.13) & (dec < dec0+0.13)
+#ra = ra[keep]
+#dec = dec[keep]
 
-flags = np.asarray(pix['flags'])
+flux = np.asarray(pix['flux'])#[keep]
+var = np.asarray(pix['variance'])#[keep]
+wave = np.asarray(pix['wavelength'])#[keep]
+imgids = np.asarray(pix['imageid'])#[keep]
+
+flags = np.asarray(pix['flags'])#[keep]
 bm = (flags.astype(np.uint32) & _BAD_BITS) != 0
 bm = bm | ((flags.astype(np.uint32) & _BAD_BITS_MISC) != 0)
 
@@ -81,7 +86,6 @@ print("   Background subtraction...")
 flux = background_subtract_pixels(flux,imgids,flags)
 print("Done.")
 
-ra,dec = healpy.pix2ang(2**22,np.asarray(pix['hphigh']),lonlat=True,nest=True)
 dxdec = 2.0/3600.0 # final pixel scale in arcsec
 dxra = dxdec/np.cos(dec0*np.pi/180) # correct for cos(dec) in RA
 rabins = np.linspace(ra.min(),ra.max(),int(((ra.max()-ra.min())/dxra))+1)
@@ -100,10 +104,16 @@ for ii in range(nwv):
     gd = np.isfinite(img[ii])
     img[ii] -= np.median(img[ii][gd])
 
-    mid = (img[ii][gd] > np.percentile(img[ii][gd],15)) & (img[ii][gd] < np.percentile(img[ii][gd],85))
-    ph,pf = np.histogram(img[ii][gd][mid].flatten(),bins=200)
-    pfc = 0.5*(pf[:-1]+pf[1:])
-    img[ii] -= pfc[np.argmax(ph)]
+    # Re-centering the background globally
+#    mid = (img[ii][gd] > np.percentile(img[ii][gd],15)) & (img[ii][gd] < np.percentile(img[ii][gd],85))
+#    ph,pf = np.histogram(img[ii][gd][mid].flatten(),bins=200)
+#    pfc = 0.5*(pf[:-1]+pf[1:])
+#    img[ii] -= pfc[np.argmax(ph)]
+#    
+    # Re-centering the background locally
+    # bg = ~((flags.astype(np.uint32) & _BAD_BITS_BKG) != 0)
+    bkg = medfilt(img[ii],(25,25))
+    img[ii] -= bkg
 
     # Outlier in-painting
     filt = medfilt(img[ii],(3,3))
@@ -145,11 +155,6 @@ dxdec = 2.0/3600.0 # final pixel scale in arcsec
 dxra = dxdec*np.cos(dec0*np.pi/180)
 rabins = np.linspace(ra.min(),ra.max(),int(((ra.max()-ra.min())/dxdec))+1)
 decbins = np.linspace(dec.min(),dec.max(),int((dec.max()-dec.min())/dxra)+1)
-rac = (len(rabins)-1)//2
-decc = (len(decbins)-1)//2
-npix = np.min([len(rabins)-1,len(decbins)-1])
-ramin = rabins[rac-npix//2]; ramax = rabins[rac+npix//2]
-decmin = decbins[decc-npix//2]; decmax = decbins[decc+npix//2]
 
 # Create the image
 mw = (wave>wv0)&(wave<wv1) #&~((wave>1.02)&(wave<1.14))
@@ -160,10 +165,13 @@ gd = np.isfinite(img)
 img -= np.median(img[gd])
 
 # Bias-correct the image by finding the peak of the pixel histogram
-mid = (img[gd] > np.percentile(img[gd],15)) & (img[gd] < np.percentile(img[gd],85))
-ph,pf = np.histogram(img[gd][mid].flatten(),bins=200)
-pfc = 0.5*(pf[:-1]+pf[1:])
-img -= pfc[np.argmax(ph)]
+#mid = (img[gd] > np.percentile(img[gd],15)) & (img[gd] < np.percentile(img[gd],85))
+#ph,pf = np.histogram(img[gd][mid].flatten(),bins=200)
+#pfc = 0.5*(pf[:-1]+pf[1:])
+#img -= pfc[np.argmax(ph)]
+
+# Alternative bias correction via local median background
+img -= medfilt(img,(25,25))
 
 # Outlier in-painting
 filt = medfilt(img,(3,3))
@@ -187,15 +195,10 @@ plt.show()
 
 # Three bands, color image
 
-dxdec = 2.0/3600.0 # final pixel scale in arcsec
+dxdec = 1.5/3600.0 # final pixel scale in arcsec
 dxra = dxdec/np.cos(dec0*np.pi/180)
 rabins = np.linspace(ra.min(),ra.max(),int(((ra.max()-ra.min())/dxra))+1)
 decbins = np.linspace(dec.min(),dec.max(),int((dec.max()-dec.min())/dxdec)+1)
-rac = (len(rabins)-1)//2
-decc = (len(decbins)-1)//2
-npix = np.min([len(rabins)-1,len(decbins)-1])
-ramin = rabins[rac-npix//2]; ramax = rabins[rac+npix//2]
-decmin = decbins[decc-npix//2]; decmax = decbins[decc+npix//2]
 
 # Blue image
 wv0 = 0.73
@@ -206,20 +209,22 @@ norm,_,_ = np.histogram2d(ra[~bm&mw],dec[~bm&mw],bins=[rabins,decbins],weights=1
 bimg /= norm
 gd = np.isfinite(bimg)
 bimg -= np.median(bimg[gd])
+bimg[~gd] = 0.0
 # Bias-correct the image by finding the peak of the pixel histogram
-mid = (bimg[gd] > np.percentile(bimg[gd],15)) & (bimg[gd] < np.percentile(bimg[gd],85))
-ph,pf = np.histogram(bimg[gd][mid].flatten(),bins=200)
-pfc = 0.5*(pf[:-1]+pf[1:])
-bimg -= pfc[np.argmax(ph)]
+#mid = (bimg[gd] > np.percentile(bimg[gd],15)) & (bimg[gd] < np.percentile(bimg[gd],85))
+#ph,pf = np.histogram(bimg[gd][mid].flatten(),bins=200)
+#pfc = 0.5*(pf[:-1]+pf[1:])
+#bimg -= pfc[np.argmax(ph)]
+bimg -= medfilt(bimg,(25,25))
 # Outlier in-painting
 filt = medfilt(bimg,(3,3))
 diff = np.abs(bimg-filt)
-gdd = np.isfinite(diff)
+gdd = np.isfinite(diff) & (diff > 0)
 fill = diff > np.percentile(diff[gdd],97.5)
 bimg[fill] = filt[fill]
 # Renormalization
 bimg = np.asinh(bimg/0.005)/6
-bimg -= np.percentile(bimg[gd],2.5)
+bimg -= np.percentile(bimg[gdd],3.0)
 bimg[bimg<0]=0
 bimg[bimg>1]=1
 
@@ -232,19 +237,21 @@ norm,_,_ = np.histogram2d(ra[~bm&mw],dec[~bm&mw],bins=[rabins,decbins],weights=1
 gimg /= norm
 gd = np.isfinite(gimg)
 gimg -= np.median(gimg[gd])
-mid = (gimg[gd] > np.percentile(gimg[gd],15)) & (gimg[gd] < np.percentile(gimg[gd],85))
-ph,pf = np.histogram(gimg[gd][mid].flatten(),bins=200)
-pfc = 0.5*(pf[:-1]+pf[1:])
-gimg -= pfc[np.argmax(ph)]
+gimg[~gd] = 0.0
+#mid = (gimg[gd] > np.percentile(gimg[gd],15)) & (gimg[gd] < np.percentile(gimg[gd],85))
+#ph,pf = np.histogram(gimg[gd][mid].flatten(),bins=200)
+#pfc = 0.5*(pf[:-1]+pf[1:])
+#gimg -= pfc[np.argmax(ph)]
+gimg -= medfilt(gimg,(25,25))
 # Outlier in-painting
 filt = medfilt(gimg,(3,3))
 diff = np.abs(gimg-filt)
-gdd = np.isfinite(diff)
+gdd = np.isfinite(diff) & (diff > 0)
 fill = diff > np.percentile(diff[gdd],97.5)
 gimg[fill] = filt[fill]
 # Renormalization
 gimg = np.asinh(gimg/0.005)/7
-gimg -= np.percentile(gimg[gd],2.5)
+gimg -= np.percentile(gimg[gdd],3.0)
 gimg[gimg<0]=0
 gimg[gimg>1]=1
 
@@ -257,19 +264,21 @@ norm,_,_ = np.histogram2d(ra[~bm&mw],dec[~bm&mw],bins=[rabins,decbins],weights=1
 rimg /= norm
 gd = np.isfinite(rimg)
 rimg -= np.median(rimg[gd])
-mid = (rimg[gd] > np.percentile(rimg[gd],15)) & (rimg[gd] < np.percentile(rimg[gd],85))
-ph,pf = np.histogram(rimg[gd][mid].flatten(),bins=200)
-pfc = 0.5*(pf[:-1]+pf[1:])
-rimg -= pfc[np.argmax(ph)]
+rimg[~gd] = 0.0
+#mid = (rimg[gd] > np.percentile(rimg[gd],15)) & (rimg[gd] < np.percentile(rimg[gd],85))
+#ph,pf = np.histogram(rimg[gd][mid].flatten(),bins=200)
+#pfc = 0.5*(pf[:-1]+pf[1:])
+#rimg -= pfc[np.argmax(ph)]
+rimg -= medfilt(rimg,(25,25))
 # Outlier in-painting
 filt = medfilt(rimg,(3,3))
 diff = np.abs(rimg-filt)
-gdd = np.isfinite(diff)
+gdd = np.isfinite(diff) & (diff > 0)
 fill = diff > np.percentile(diff[gdd],97.5)
 rimg[fill] = filt[fill]
 # Renormalization
 rimg = np.asinh(rimg/0.005)/6
-rimg -= np.percentile(rimg[gd],2.5)
+rimg -= np.percentile(rimg[gdd],3.0)
 rimg[rimg<0]=0
 rimg[rimg>1]=1
 
@@ -279,22 +288,18 @@ plt.imshow(np.array([rimg,gimg,bimg]).T,origin='lower',
            extent=[rabins[0],rabins[-1],decbins[0],decbins[-1]],aspect=1/np.cos(dec0*np.pi/180))
 plt.xlim(ramax,ramin)
 plt.ylim(decmin,decmax)
+plt.title(r'EDF-N J1825+6520 (0.75$-$1.5 $\mu$m, 1.5$-$3 $\mu$m, 3$-$5 $\mu$m)',fontsize=20)
 plt.tight_layout()
-plt.savefig('EDFN_RGB.png',dpi=150)
+#plt.savefig('EDFN_RGB.png',dpi=150)
 plt.show()
 
 
 # NB-excess image
 
-dxdec = 2.0/3600.0 # final pixel scale in arcsec
+dxdec = 3.0/3600.0 # final pixel scale in arcsec
 dxra = dxdec*np.cos(dec0*np.pi/180)
 rabins = np.linspace(ra.min(),ra.max(),int(((ra.max()-ra.min())/dxdec))+1)
 decbins = np.linspace(dec.min(),dec.max(),int((dec.max()-dec.min())/dxra)+1)
-rac = (len(rabins)-1)//2
-decc = (len(decbins)-1)//2
-npix = np.min([len(rabins)-1,len(decbins)-1])
-ramin = rabins[rac-npix//2]; ramax = rabins[rac+npix//2]
-decmin = decbins[decc-npix//2]; decmax = decbins[decc+npix//2]
 
 # Blue continuum
 wv0 = 3.84
@@ -305,15 +310,17 @@ norm,_,_ = np.histogram2d(ra[~bm&mw],dec[~bm&mw],bins=[rabins,decbins],weights=1
 bcimg /= norm
 gd = np.isfinite(bcimg)
 bcimg -= np.median(bcimg[gd])
+bcimg[~gd] = 0.0
 # Bias-correct the image by finding the peak of the pixel histogram
-mid = (bcimg[gd] > np.percentile(bcimg[gd],15)) & (bcimg[gd] < np.percentile(bcimg[gd],85))
-ph,pf = np.histogram(bcimg[gd][mid].flatten(),bins=200)
-pfc = 0.5*(pf[:-1]+pf[1:])
-bcimg -= pfc[np.argmax(ph)]
+#mid = (bcimg[gd] > np.percentile(bcimg[gd],15)) & (bcimg[gd] < np.percentile(bcimg[gd],85))
+#ph,pf = np.histogram(bcimg[gd][mid].flatten(),bins=200)
+#pfc = 0.5*(pf[:-1]+pf[1:])
+#bcimg -= pfc[np.argmax(ph)]
+bcimg -= medfilt(bcimg,(25,25))
 # Outlier in-painting
 filt = medfilt(bcimg,(3,3))
 diff = np.abs(bcimg-filt)
-gdd = np.isfinite(diff)
+gdd = np.isfinite(diff) & (diff > 0)
 fill = diff > np.percentile(diff[gdd],97.5)
 bcimg[fill] = filt[fill]
 
@@ -326,14 +333,16 @@ norm,_,_ = np.histogram2d(ra[~bm&mw],dec[~bm&mw],bins=[rabins,decbins],weights=1
 nbimg /= norm
 gd = np.isfinite(nbimg)
 nbimg -= np.median(nbimg[gd])
-mid = (nbimg[gd] > np.percentile(nbimg[gd],15)) & (nbimg[gd] < np.percentile(nbimg[gd],85))
-ph,pf = np.histogram(nbimg[gd][mid].flatten(),bins=200)
-pfc = 0.5*(pf[:-1]+pf[1:])
-nbimg -= pfc[np.argmax(ph)]
+nbimg[~gd] = 0.0
+#mid = (nbimg[gd] > np.percentile(nbimg[gd],15)) & (nbimg[gd] < np.percentile(nbimg[gd],85))
+#ph,pf = np.histogram(nbimg[gd][mid].flatten(),bins=200)
+#pfc = 0.5*(pf[:-1]+pf[1:])
+#nbimg -= pfc[np.argmax(ph)]
+nbimg -= medfilt(nbimg,(25,25))
 # Outlier in-painting
 filt = medfilt(nbimg,(3,3))
 diff = np.abs(nbimg-filt)
-gdd = np.isfinite(diff)
+gdd = np.isfinite(diff) & (diff > 0)
 fill = diff > np.percentile(diff[gdd],97.5)
 nbimg[fill] = filt[fill]
 
@@ -346,25 +355,28 @@ norm,_,_ = np.histogram2d(ra[~bm&mw],dec[~bm&mw],bins=[rabins,decbins],weights=1
 rcimg /= norm
 gd = np.isfinite(rcimg)
 rcimg -= np.median(rcimg[gd])
-mid = (rcimg[gd] > np.percentile(rcimg[gd],15)) & (rcimg[gd] < np.percentile(rcimg[gd],85))
-ph,pf = np.histogram(rimg[gd][mid].flatten(),bins=200)
-pfc = 0.5*(pf[:-1]+pf[1:])
-rcimg -= pfc[np.argmax(ph)]
+rcimg[~gd] = 0.0
+#mid = (rcimg[gd] > np.percentile(rcimg[gd],15)) & (rcimg[gd] < np.percentile(rcimg[gd],85))
+#ph,pf = np.histogram(rimg[gd][mid].flatten(),bins=200)
+#pfc = 0.5*(pf[:-1]+pf[1:])
+#rcimg -= pfc[np.argmax(ph)]
+rcimg -= medfilt(rcimg,(25,25))
 # Outlier in-painting
 filt = medfilt(rcimg,(3,3))
 diff = np.abs(rcimg-filt)
-gdd = np.isfinite(diff)
+gdd = np.isfinite(diff) & (diff > 0)
 fill = diff > np.percentile(diff[gdd],97.5)
 rcimg[fill] = filt[fill]
 
 
 fig,ax = plt.subplots(1,1,figsize=(9,9))
-plt.imshow((nbimg-0.5*(rcimg+bcimg)).T,origin='lower',extent=[ramin,ramax,decmin,decmax],aspect=1/np.cos(dec0*np.pi/180),cmap='RdYlBu_r',
-            vmin=-0.07,vmax=0.07)
+plt.imshow((nbimg-0.5*(rcimg+bcimg)).T,origin='lower',extent=[rabins[0],rabins[-1],decbins[0],decbins[-1]],aspect=1/np.cos(dec0*np.pi/180),cmap='managua',
+            vmin=-0.05,vmax=0.05)
 plt.xlim(ramax,ramin)
 plt.ylim(decmin,decmax)
+plt.title(r'EDF-N J1825+6520 H$\alpha$ NB excess',fontsize=20)
 plt.tight_layout()
-#plt.savefig('EDFN_NBz54.png',dpi=150)
+plt.savefig('EDFN_NBz54.png',dpi=150)
 plt.show()
 
 
@@ -385,11 +397,6 @@ dxdec = 3.0/3600.0 # final pixel scale in arcsec
 dxra = dxdec/np.cos(dec0*np.pi/180)
 rabins = np.linspace(ra.min(),ra.max(),int(((ra.max()-ra.min())/dxra))+1)
 decbins = np.linspace(dec.min(),dec.max(),int((dec.max()-dec.min())/dxdec)+1)
-rac = (len(rabins)-1)//2
-decc = (len(decbins)-1)//2
-npix = np.min([len(rabins)-1,len(decbins)-1])
-ramin = rabins[rac-npix//2]; ramax = rabins[rac+npix//2]
-decmin = decbins[decc-npix//2]; decmax = decbins[decc+npix//2]
 
 cube = np.zeros((nwv1234+nwv56,len(rabins)-1,len(decbins)-1))
 
@@ -402,17 +409,20 @@ for ii in range(nwv1234):
     img /= norm
     gd = np.isfinite(img)
     img -= np.median(img[gd])
+    img[~gd] = 0.0
 
     # Bias-correct the image by finding the peak of the pixel histogram
-    mid = (img[gd] > np.percentile(img[gd],15)) & (img[gd] < np.percentile(img[gd],85))
-    ph,pf = np.histogram(img[gd][mid].flatten(),bins=200)
-    pfc = 0.5*(pf[:-1]+pf[1:])
-    img -= pfc[np.argmax(ph)]
+#    mid = (img[gd] > np.percentile(img[gd],15)) & (img[gd] < np.percentile(img[gd],85))
+#    ph,pf = np.histogram(img[gd][mid].flatten(),bins=200)
+#    pfc = 0.5*(pf[:-1]+pf[1:])
+#    img -= pfc[np.argmax(ph)]
+
+    img -= medfilt(img,(35,35))
 
     # Outlier in-painting
     filt = medfilt(img,(3,3))
     diff = np.abs(img-filt)
-    gdd = np.isfinite(diff)
+    gdd = np.isfinite(diff) & (diff > 0)
     fill = diff > np.percentile(diff[gdd],97.5)
     img[fill] = filt[fill]
     
@@ -427,17 +437,20 @@ for ii in range(nwv56):
     img /= norm
     gd = np.isfinite(img)
     img -= np.median(img[gd])
+    img[~gd] = 0.0
 
     # Bias-correct the image by finding the peak of the pixel histogram
-    mid = (img[gd] > np.percentile(img[gd],15)) & (img[gd] < np.percentile(img[gd],85))
-    ph,pf = np.histogram(img[gd][mid].flatten(),bins=200)
-    pfc = 0.5*(pf[:-1]+pf[1:])
-    img -= pfc[np.argmax(ph)]
+#    mid = (img[gd] > np.percentile(img[gd],15)) & (img[gd] < np.percentile(img[gd],85))
+#    ph,pf = np.histogram(img[gd][mid].flatten(),bins=200)
+#    pfc = 0.5*(pf[:-1]+pf[1:])
+#    img -= pfc[np.argmax(ph)]
 
+    img -= medfilt(img,(35,35))
+    
     # Outlier in-painting
     filt = medfilt(img,(3,3))
     diff = np.abs(img-filt)
-    gdd = np.isfinite(diff)
+    gdd = np.isfinite(diff) & (diff > 0)
     fill = diff > np.percentile(diff[gdd],97.5)
     img[fill] = filt[fill]
     
@@ -454,8 +467,18 @@ wcs.wcs.crval = [0.5*(rabins[0]+rabins[1]),0.5*(decbins[0]+decbins[1])]
 wcs.wcs.cdelt = [-dxra,dxdec]
 wcs.wcs.ctype = ['RA---TAN', 'DEC--TAN']
 
-hdu = fits.PrimaryHDU(cube, header=wcs.to_header())
-hdu.writeto("spherex_cube_edfn.fits",overwrite=True)
+header = fits.Header()
+header.update(wcs.to_header())
+header['BUNIT'] = 'MJr/sr'
+primary_hdu = fits.PrimaryHDU(cube, header=header)
+
+wave_hdu = fits.ImageHDU(waves, header=fits.Header())
+wave_hdu.header['EXTNAME'] = 'WAVELENGTH'
+wave_hdu.header['BUNIT'] = 'UM'
+wave_hdu.header['TTYPE1'] = 'WAVELENGTH'
+
+hdul = fits.HDUList([primary_hdu, wave_hdu])
+hdul.writeto("spherex_cube_edfn.fits",overwrite=True)
 
 # Write out a cube with the irregular wavelengths attached
 # to be viewed with cubeviz/jdaviz (cannot get them to work properly though)
