@@ -105,6 +105,10 @@ class ExtractionResult:
     opt_snr: Optional[float]
     opt_chi2: Optional[float]
     opt_dof: Optional[int]
+    
+    # Aperture extraction
+    aper_flux_uJy: Optional[float]        # integrated flux in µJy
+    aper_flux_uJy_err: Optional[float]
 
     # Target pixel position
     xpix_fulldet: Optional[float]
@@ -121,7 +125,7 @@ def download_cutout_pixels(ra,dec,cutout_size_deg=0.05,wvbounds=None):
     """
     Load the pixels corresponding to a small region around the target source.
     """
-    radius = 60.0*cutout_size_deg/2+(6.15/60) # in arcmin
+    radius = 60.0*cutout_size_deg/2+(6.15/60) # in arcmin, with one pixel buffer
     custom_mask = ~(_BAD_BITS | _BAD_BITS_BKG | _BAD_BITS_MISC) # we actually want all the pixels, and will mask later on
     if wvbounds is None:
         query = (
@@ -146,16 +150,19 @@ def download_cutout_pixels(ra,dec,cutout_size_deg=0.05,wvbounds=None):
     print("Done.")
     return pixels
     
-def cutout_pixels_to_images(pixels, image_tab, ra, dec, cutout_size):
+def cutout_pixels_to_images(pixels, image_tab, ra, dec, cutout_size, nodup=True):
     """
     Reconstruction of individual images from a big bucket of pixels.
     """
     # --- Extract pyarrow.table columns up front ---
     pix_ids   = np.asarray(pixels['imageid'])
     all_hp    = np.asarray(pixels['hphigh'])
-    # Remove duplicate pixels (in case multiple pixel queries are combined ---
-    _,undup_idx = np.unique(np.vstack([pix_ids,all_hp]).T,axis=0,return_index=True)
-    print("   Removing duplicate pixels (if any)")
+    if nodup:
+        undup_idx = np.arange(len(pix_ids))
+    else:
+        # Remove duplicate pixels (in case multiple pixel queries are combined ---
+        print("   Removing duplicate pixels (if any)")
+        _,undup_idx = np.unique(np.vstack([pix_ids,all_hp]).T,axis=0,return_index=True)
     pix_ids   = pix_ids[undup_idx]
     all_hp    = all_hp[undup_idx]
     all_row   = np.asarray(pixels['row'])[undup_idx]
@@ -195,7 +202,7 @@ def cutout_pixels_to_images(pixels, image_tab, ra, dec, cutout_size):
     # Rather than do something sophisticated, we pretend RA can go negative
     wrap = (ra < cutout_size) | (ra > 360.0-cutout_size)
     if wrap: # we gotta wrap it up
-        if ra > 0: # object is on the positive side
+        if ra < 180: # object is on the positive side
             all_ra[all_ra>360-2*cutout_size] -= 360.0
         else: # object is on the "negative" side
             all_ra[all_ra<2*cutout_size] += 360.0
@@ -463,8 +470,8 @@ def optimal_extract(image, psf_cube_fits, name, ra, dec,
         elif save_figs and results_dir:
             figs_dir = os.path.join(results_dir, f"{name}_figs")
             Path(figs_dir).mkdir(parents=True, exist_ok=True)
-            obs = hdr["OBSID"]
-            det = hdr["DETECTOR"]
+            obs = image['obsid']
+            det = image['detector_id']
             fig.savefig(Path(figs_dir) / f"{name}_{obs}D{det}_{stub}.png", dpi=130)
         plt.close(fig)
 
@@ -485,6 +492,7 @@ def optimal_extract(image, psf_cube_fits, name, ra, dec,
             opt_snr=None, opt_chi2=None, opt_dof=None,
             xpix_fulldet=None, ypix_fulldet=None,
             xpix_cutout=None, ypix_cutout=None,
+            aper_flux_uJy=None, aper_flux_uJy_err=None
         )
         base.update(overrides)
         return ExtractionResult(**base)
@@ -780,6 +788,13 @@ def optimal_extract(image, psf_cube_fits, name, ra, dec,
         f"  Optimal flux: {f_hat:.4g} ± {f_hat_err:.3g} MJy/sr  "
         f"≈ {flux_uJy:.4g} ± {flux_uJy_err:.3g} µJy  S/N={snr:.2f}"
     )
+    
+    # Let's also get the aperture flux for comparison
+    aper_radius_px = 2.0 # This should get most of the flux
+    apermask = r2 <= aper_radius_px ** 2
+    aper_flux = np.sum(data_safe[apermask])
+    aper_flux_uJy = aper_flux * omega_sr * 1e12
+    aper_flux_uJy_err = np.sqrt(np.sum(cut_var[apermask & (data_safe != 0)]))
 
     # ================================================================
     # 11. Spectral WCS at target position
@@ -852,6 +867,8 @@ def optimal_extract(image, psf_cube_fits, name, ra, dec,
         opt_snr=float(snr),
         opt_chi2=float(chi2_val),
         opt_dof=int(dof_val),
+        aper_flux_uJy=float(aper_flux_uJy),
+        aper_flux_uJy_err=float(aper_flux_uJy_err),
         xpix_fulldet=float(xpix_fulldet),
         ypix_fulldet=float(ypix_fulldet),
         xpix_cutout=float(xcut),
@@ -1004,6 +1021,8 @@ def _build_parser():
                    help="Ignore flag-based pixel masking in the fit")
     p.add_argument("--linear-bkg", action="store_true",
                    help="Fit a linear model to the background instead of local median")
+    p.add_argument("--aperture-extract", action="store_true",
+                   help="Perform aperture photometry instead of optimal extraction")
 
     # Output / display
     p.add_argument("--debug", action="store_true",
@@ -1110,6 +1129,7 @@ def main(argv=None):
         
         try:
             cutout_pixels = download_cutout_pixels(ra=ra,dec=dec,cutout_size_deg=args.cutout_size)
+            nodup = True
         except:
             print(f"   PixelQuery failed. Trying again in {6*args.nchunks} wavelength chunks...")
             sleep(3)
@@ -1137,13 +1157,14 @@ def main(argv=None):
                                                                   wvbounds=[wvbins[ii],wvbins[ii+1]])
                                                                   
                 cutout_pixels = pyarrow.concat_tables(cutout_pixels_wv)
+                nodup = False
             except:
                 print("   PixelQuery failed yet again. Try increasing --nchunks or reducing the primary cutout size.")
                 sleep(5)
                 failed.append(name)
                 continue
         
-        cutout_images = cutout_pixels_to_images(cutout_pixels,image_tab,ra,dec,args.cutout_size)
+        cutout_images = cutout_pixels_to_images(cutout_pixels,image_tab,ra,dec,args.cutout_size,nodup=nodup)
 
         # ------------------------------------------------------------------
         # Step 2: optimal extraction from each cutout
