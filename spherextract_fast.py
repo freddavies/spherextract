@@ -251,7 +251,11 @@ def cutout_pixels_to_images(pixels, image_tab, ra, dec, cutout_size, nodup=True)
         decimg  [off_x, off_y] = all_dec[sl]
 
         img_id = unique_ids[i]
-        t_beg, t_end, obsid_val = tab_meta[img_id]
+        try:
+            t_beg, t_end, obsid_val = tab_meta[img_id]
+        except:
+            print("Image ID not found in image.parquet. Try a 'git pull' or update yourself from flatiron site.")
+            continue
 
         images.append({
             'ra': raimg,  'dec': decimg,
