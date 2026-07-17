@@ -421,7 +421,7 @@ _BAD_BITS_MISC = (
 # Core: optimal extraction from a single image
 # ---------------------------------------------------------------------------
 
-def optimal_extract(image, psf_cube_fits, name, ra, dec,
+def optimal_extract(image, psf_cube_fits, name, ra, dec, sapm_fits=None,
                     fit_radius_px = 3.0, kappa = 4.0, max_iter = 10,
                     linear_bkg = False, debug = False, show_figs = False,
                     save_figs = False, results_dir = None, no_masking = False):
@@ -522,16 +522,20 @@ def optimal_extract(image, psf_cube_fits, name, ra, dec,
     cdelt    = hdr_psf["CDELT1"]   # arcsec per high-res px
     px_arcsec = cdelt * oversamp   # arcsec per detector px
 
-    omega_arcsec2 = 6.15*6.15 # hdr["HIERARCH OMEGA_MEDIAN"]
-    arcsec2_to_sr = (np.pi / (180.0 * 3600.0)) ** 2
-    omega_sr = omega_arcsec2 * arcsec2_to_sr
-
     obsid       = image['obsid']
     det_w        = img.shape[1]
     det_h        = img.shape[0]
     
     unused = wave == 0
     m = ~unused
+    
+    omega_arcsec2 = 6.15*6.15*np.ones_like(img)
+    if sapm_fits is not None:
+        omega_arcsec2[m] = sapm_fits[1].data[image['row'].astype(int)[m],image['col'].astype(int)[m]]
+        
+    arcsec2_to_sr = (np.pi / (180.0 * 3600.0)) ** 2
+    omega_sr = omega_arcsec2 * arcsec2_to_sr
+
     
 #    # ================================================================
 #    # 2. Target pixel position
@@ -776,9 +780,9 @@ def optimal_extract(image, psf_cube_fits, name, ra, dec,
     # (Σ P_det ≈ 1 for a unit-normalised PSF)
     f_hat_err = float(np.sqrt(var_f)) if np.isfinite(var_f) else np.nan
 
-    if np.isfinite(omega_sr) and psf_sum > 0:
-        flux_uJy     = f_hat * omega_sr * psf_sum * 1e12
-        flux_uJy_err = f_hat_err * omega_sr * psf_sum * 1e12
+    if psf_sum > 0:
+        flux_uJy     = f_hat * omega_sr[int(ycut),int(xcut)] * psf_sum * 1e12
+        flux_uJy_err = f_hat_err * omega_sr[int(ycut),int(xcut)] * psf_sum * 1e12
     else:
         flux_uJy = flux_uJy_err = np.nan
 
@@ -793,7 +797,7 @@ def optimal_extract(image, psf_cube_fits, name, ra, dec,
     aper_radius_px = 2.0 # This should get most of the flux
     apermask = r2 <= aper_radius_px ** 2
     aper_flux = np.sum(data_safe[apermask])
-    aper_flux_uJy = aper_flux * omega_sr * 1e12
+    aper_flux_uJy = aper_flux * omega_sr[int(ycut),int(xcut)] * 1e12
     aper_flux_uJy_err = np.sqrt(np.sum(cut_var[apermask & (data_safe != 0)]))
 
     # ================================================================
@@ -847,7 +851,7 @@ def optimal_extract(image, psf_cube_fits, name, ra, dec,
         expid=int(image['imageid']),
         mjd_avg=float(mjd_avg_val),
         psf_index=int(idx_psf),
-        omega_sr=float(omega_sr),
+        omega_sr=float(omega_sr[int(ycut),int(xcut)]),
         px_scale_arcsec=float(px_arcsec),
         wv_um=float(wv_um),
         wv_width_um=float(wv_width_um),
@@ -1039,6 +1043,8 @@ def _build_parser():
                    help="Directory to look for the image.parquet talltable data file.")
     p.add_argument("--psf-path", default="spherex_calibs/psf",
                    help="Directory to look for oversampled PSF model cubes.")
+    p.add_argument("--sapm-path", default=None,
+                   help="Directory to look for solid angle maps. Not used by default.")
 
     return p
 
@@ -1109,6 +1115,12 @@ def main(argv=None):
     # Load in PSF model cubes
     psf_cubes = [fits.open(os.path.join(args.psf_path,f'average_psf_D{ii+1}_spx_cal-psf-v5-2026-082.fits')) for ii in range(6)]
 
+    # Load in solid angle maps
+    if args.sapm_path is not None:
+        sapm_images = [fits.open(os.path.join(args.sapm_path,r'solid_angle_pixel_map_D1_spx_cal-sapm-v2-2025-164.fits')) for ii in range(6)]
+    else:
+        sapm_images = None
+
     failed = []
 
     for name, ra, dec in targets:
@@ -1177,6 +1189,7 @@ def main(argv=None):
                 name=name,
                 ra=ra,
                 dec=dec,
+                sapm_fits=sapm_images[det-1] if sapm_images is not None else None,
                 fit_radius_px=args.fit_radius,
                 kappa=args.kappa,
                 max_iter=args.max_iter,
