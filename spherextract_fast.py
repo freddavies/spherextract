@@ -54,6 +54,11 @@ import pyarrow
 import pyarrow.parquet
 from time import sleep
 
+from astroquery.ipac.irsa import Irsa
+from astroquery.gaia import Gaia
+from astropy.coordinates import SkyCoord
+import astropy.units as u
+
 from IPython import embed
 
 
@@ -420,12 +425,49 @@ _BAD_BITS_MISC = (
     | _bit(_MP["SNOWBALL"])
 )
 
+# Helper: Get nearby objects via astroquery
+def find_nearby_objects(ra, dec,
+                        catalog='irsa_catwise_2020',
+                        deblend_radius=30.0, maglim=17.3):
+    """
+    Locate nearby objects for deblending purposes.
+    """
+    coord = SkyCoord(ra,dec,unit='deg',frame='icrs')
+    if catalog is 'irsa_catwise_2020':
+        print("    Querying CatWISE2020 for nearby objects brighter than W1={maglim+2.7} AB mag within {deblend_radius} arcsec")
+        all_objs = Irsa.query_region(coordinates=coord,spatial='Cone',catalog='catwise_2020',
+                                 radius=deblend_radius*u.arcsec)
+        target = np.argmin(np.sqrt((all_objs['ra']-ra)**2+(all_objs['dec']-dec)**2))
+        keep = (all_objs['w1mpro'] < maglim) & (np.arange(len(all_objs)) != target)
+        if np.sum(keep) > 0:
+            deblend_list = np.vstack([all_objs['ra'][keep],all_objs['dec'][keep]]).T
+        else:
+            deblend_list = None
+    elif catalog is 'gaia':
+        print(f"    Querying Gaia for nearby objects brighter than G_RP={maglim} mag within {deblend_radius} arcsec")
+        j = Gaia.cone_search_async(coord, radius=u.Quantity(deblend_radius, u.arcsec))
+        r = j.get_results()
+        target = np.argmin(np.sqrt((r['ra']-ra)**2+(r['dec']-dec)**2))
+        keep = (r['phot_rp_mean_mag'] < maglim) & (np.arange(len(r)) != target)
+        if np.sum(keep) > 0:
+            deblend_list = np.vstack([r['ra'][keep],r['dec'][keep]]).T
+        else:
+            deblend_list = None
+    else:
+        print("???? what. no such catalog supported, no deblending for you")
+        deblend_list = None
+    if deblend_list is not None:
+        print(f"    {np.sum(keep)} found.")
+    else:
+        print("    No nearby objects to deblend.")
+        
+    return deblend_list
 
 # ---------------------------------------------------------------------------
 # Core: optimal extraction from a single image
 # ---------------------------------------------------------------------------
 
-def optimal_extract(image, psf_cube_fits, name, ra, dec,
+def optimal_extract(image, psf_cube_fits, name, ra, dec, deblend_list = None,
                     fit_radius_px = 3.0, kappa = 4.0, max_iter = 10,
                     linear_bkg = False, debug = False, show_figs = False,
                     save_figs = False, results_dir = None, no_masking = False):
@@ -537,6 +579,9 @@ def optimal_extract(image, psf_cube_fits, name, ra, dec,
     unused = wave == 0
     m = ~unused
     
+    if deblend_list is not None:
+        nblend = len(deblend_list)
+    
 #    # ================================================================
 #    # 2. Target pixel position
 #    #
@@ -564,6 +609,8 @@ def optimal_extract(image, psf_cube_fits, name, ra, dec,
         print("  [WARN] Target outside image footprint; skipping.")
         return _nan_result(near_detector_edge=True)
         
+    if deblend_list is not None:
+        xcut_deblend, ycut_deblend = wcs(deblend_list[:,0], deblend_list[:,1])
 
 #    # (b) Full-detector pixel coordinate.
     xpix_fulldet = xcut+image['col'][m].min()
@@ -666,6 +713,17 @@ def optimal_extract(image, psf_cube_fits, name, ra, dec,
     YY, XX = np.indices((H, W))
     r2 = (XX - xcut) ** 2 + (YY - ycut) ** 2
     radmask = r2 <= fit_radius_px ** 2
+    
+    if deblend_list is not None:
+        keep = np.ones(nblend,dtype=bool)
+        for ii in range(nblend):
+            r2 = (XX-xcut_deblend[ii])**2 + (YY-ycut_deblend[ii])**2
+            radmask_deblend = r2 <= fit_radius_px ** 2
+            if np.sum(radmask_deblend) == 0:
+                keep[ii] = False
+            else:
+                radmask = radmask | radmask_deblend
+        deblend_list = deblend_list[keep]
 
     if no_masking:
         flag_mask = np.zeros((H, W), dtype=bool)
