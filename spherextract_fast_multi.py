@@ -37,27 +37,35 @@ python spherextract_fast.py --ra 129.1827 --dec 0.914806 \\
     --cutout-size 0.1 \\
     --results-dir results_J0836/
 """
+from __future__ import print_function, division
+
 import argparse
 import os
 import sys
 from dataclasses import asdict, dataclass
+from math import pi
 from pathlib import Path
 from typing import Dict, List, Optional, Any
+from http.client import IncompleteRead
+from urllib.error import HTTPError
+from urllib.request import urlopen
 
+import astropy.units as u
 import numpy as np
+from astropy.coordinates import SkyCoord
 from astropy.io import ascii, fits
+from astropy.nddata import Cutout2D
+from astropy.nddata.utils import NoOverlapError
+from astropy.wcs import WCS
+from astroquery.ipac.irsa import Irsa
 from scipy import ndimage
 
+# talltable and related stuff
 import talltable
 import healpy
 import pyarrow
 import pyarrow.parquet
 from time import sleep
-
-from astroquery.ipac.irsa import Irsa
-from astroquery.gaia import Gaia
-from astropy.coordinates import SkyCoord
-import astropy.units as u
 
 from IPython import embed
 
@@ -110,10 +118,6 @@ class ExtractionResult:
     opt_snr: Optional[float]
     opt_chi2: Optional[float]
     opt_dof: Optional[int]
-    
-    # Aperture extraction
-    aper_flux_uJy: Optional[float]        # integrated flux in µJy
-    aper_flux_uJy_err: Optional[float]
 
     # Target pixel position
     xpix_fulldet: Optional[float]
@@ -126,48 +130,34 @@ class ExtractionResult:
 # Helpers: Talltable processing
 # ---------------------------------------------------------------------------
 
-def download_cutout_pixels(ra,dec,cutout_size_deg=0.05,wvbounds=None):
+def download_cutout_pixels(ra,dec,cutout_size_deg=0.05):
     """
     Load the pixels corresponding to a small region around the target source.
     """
-    radius = 60.0*cutout_size_deg/2+(6.15/60) # in arcmin, with one pixel buffer
+    radius = 60.0*cutout_size_deg/2+(6.15/60) # in arcmin
     custom_mask = ~(_BAD_BITS | _BAD_BITS_BKG | _BAD_BITS_MISC) # we actually want all the pixels, and will mask later on
-    if wvbounds is None:
-        query = (
-                 talltable.PixelQuery(web=True)
-                 .disc(ra, dec, radius)
-                 .flags(custom_mask=custom_mask)
-                 .with_wavelengths()
-                 .with_rowcoldet()
-                )
-    else:
-        wvmin, wvmax = wvbounds
-        query = (
-                 talltable.PixelQuery(web=True)
-                 .disc(ra, dec, radius)
-                 .flags(custom_mask=custom_mask)
-                 .wavelength(wvmin, wvmax)
-                 .with_wavelengths()
-                 .with_rowcoldet()
-                )
+    query = (
+             talltable.PixelQuery(web=True)
+             .disc(ra, dec, radius)
+             .flags(custom_mask=custom_mask)
+             .with_wavelengths()
+             .with_rowcoldet()
+            )
     print("Executing talltable query...")
     pixels = query.execute()
     print("Done.")
     return pixels
     
-def cutout_pixels_to_images(pixels, image_tab, ra, dec, cutout_size, nodup=True):
+def cutout_pixels_to_images(pixels, image_tab, ra, dec, cutout_size):
     """
     Reconstruction of individual images from a big bucket of pixels.
     """
     # --- Extract pyarrow.table columns up front ---
     pix_ids   = np.asarray(pixels['imageid'])
     all_hp    = np.asarray(pixels['hphigh'])
-    if nodup:
-        undup_idx = np.arange(len(pix_ids))
-    else:
-        # Remove duplicate pixels (in case multiple pixel queries are combined ---
-        print("   Removing duplicate pixels (if any)")
-        _,undup_idx = np.unique(np.vstack([pix_ids,all_hp]).T,axis=0,return_index=True)
+    # Remove duplicate pixels (in case multiple pixel queries are combined ---
+    _,undup_idx = np.unique(np.vstack([pix_ids,all_hp]).T,axis=0,return_index=True)
+    print("   Removing duplicate pixels (if any)")
     pix_ids   = pix_ids[undup_idx]
     all_hp    = all_hp[undup_idx]
     all_row   = np.asarray(pixels['row'])[undup_idx]
@@ -178,7 +168,7 @@ def cutout_pixels_to_images(pixels, image_tab, ra, dec, cutout_size, nodup=True)
     all_wave  = np.asarray(pixels['wavelength'])[undup_idx]
     all_dwave = np.asarray(pixels['bandwidth'])[undup_idx]
     
-    all_det   = np.asarray(pixels['det'])[undup_idx]
+    all_det   = np.asarray(pixels['det'])
     
     # --- Sort once by imageid to make groups contiguous ---
     sort_idx    = np.argsort(pix_ids, kind='stable')
@@ -207,7 +197,7 @@ def cutout_pixels_to_images(pixels, image_tab, ra, dec, cutout_size, nodup=True)
     # Rather than do something sophisticated, we pretend RA can go negative
     wrap = (ra < cutout_size) | (ra > 360.0-cutout_size)
     if wrap: # we gotta wrap it up
-        if ra < 180: # object is on the positive side
+        if ra > 0: # object is on the positive side
             all_ra[all_ra>360-2*cutout_size] -= 360.0
         else: # object is on the "negative" side
             all_ra[all_ra<2*cutout_size] += 360.0
@@ -256,11 +246,7 @@ def cutout_pixels_to_images(pixels, image_tab, ra, dec, cutout_size, nodup=True)
         decimg  [off_x, off_y] = all_dec[sl]
 
         img_id = unique_ids[i]
-        try:
-            t_beg, t_end, obsid_val = tab_meta[img_id]
-        except:
-            print("Image ID not found in image.parquet. Try a 'git pull' or update yourself from flatiron site.")
-            continue
+        t_beg, t_end, obsid_val = tab_meta[img_id]
 
         images.append({
             'ra': raimg,  'dec': decimg,
@@ -425,49 +411,12 @@ _BAD_BITS_MISC = (
     | _bit(_MP["SNOWBALL"])
 )
 
-# Helper: Get nearby objects via astroquery
-def find_nearby_objects(ra, dec,
-                        catalog='irsa_catwise_2020',
-                        deblend_radius=30.0, maglim=17.3):
-    """
-    Locate nearby objects for deblending purposes.
-    """
-    coord = SkyCoord(ra,dec,unit='deg',frame='icrs')
-    if catalog is 'irsa_catwise_2020':
-        print("    Querying CatWISE2020 for nearby objects brighter than W1={maglim+2.7} AB mag within {deblend_radius} arcsec")
-        all_objs = Irsa.query_region(coordinates=coord,spatial='Cone',catalog='catwise_2020',
-                                 radius=deblend_radius*u.arcsec)
-        target = np.argmin(np.sqrt((all_objs['ra']-ra)**2+(all_objs['dec']-dec)**2))
-        keep = (all_objs['w1mpro'] < maglim) & (np.arange(len(all_objs)) != target)
-        if np.sum(keep) > 0:
-            deblend_list = np.vstack([all_objs['ra'][keep],all_objs['dec'][keep]]).T
-        else:
-            deblend_list = None
-    elif catalog is 'gaia':
-        print(f"    Querying Gaia for nearby objects brighter than G_RP={maglim} mag within {deblend_radius} arcsec")
-        j = Gaia.cone_search_async(coord, radius=u.Quantity(deblend_radius, u.arcsec))
-        r = j.get_results()
-        target = np.argmin(np.sqrt((r['ra']-ra)**2+(r['dec']-dec)**2))
-        keep = (r['phot_rp_mean_mag'] < maglim) & (np.arange(len(r)) != target)
-        if np.sum(keep) > 0:
-            deblend_list = np.vstack([r['ra'][keep],r['dec'][keep]]).T
-        else:
-            deblend_list = None
-    else:
-        print("???? what. no such catalog supported, no deblending for you")
-        deblend_list = None
-    if deblend_list is not None:
-        print(f"    {np.sum(keep)} found.")
-    else:
-        print("    No nearby objects to deblend.")
-        
-    return deblend_list
 
 # ---------------------------------------------------------------------------
 # Core: optimal extraction from a single image
 # ---------------------------------------------------------------------------
 
-def optimal_extract(image, psf_cube_fits, name, ra, dec, deblend_list = None,
+def optimal_extract(image, psf_cube_fits, nobj, names, ras, decs,
                     fit_radius_px = 3.0, kappa = 4.0, max_iter = 10,
                     linear_bkg = False, debug = False, show_figs = False,
                     save_figs = False, results_dir = None, no_masking = False):
@@ -489,8 +438,8 @@ def optimal_extract(image, psf_cube_fits, name, ra, dec, deblend_list = None,
     Parameters
     ----------
     image         : cutout image
-    name          : source label (used in output filenames)
-    ra, dec       : target position (degrees)
+    names         : source labels (used in output filenames)
+    ras, decs     : target positions (degrees)
     fit_radius_px : pixels beyond this radius (from target) are excluded
     kappa         : outlier rejection threshold in units of pixel σ
     max_iter      : maximum outlier-rejection iterations
@@ -516,8 +465,8 @@ def optimal_extract(image, psf_cube_fits, name, ra, dec, deblend_list = None,
         elif save_figs and results_dir:
             figs_dir = os.path.join(results_dir, f"{name}_figs")
             Path(figs_dir).mkdir(parents=True, exist_ok=True)
-            obs = image['obsid']
-            det = image['detector_id']
+            obs = hdr["OBSID"]
+            det = hdr["DETECTOR"]
             fig.savefig(Path(figs_dir) / f"{name}_{obs}D{det}_{stub}.png", dpi=130)
         plt.close(fig)
 
@@ -538,7 +487,6 @@ def optimal_extract(image, psf_cube_fits, name, ra, dec, deblend_list = None,
             opt_snr=None, opt_chi2=None, opt_dof=None,
             xpix_fulldet=None, ypix_fulldet=None,
             xpix_cutout=None, ypix_cutout=None,
-            aper_flux_uJy=None, aper_flux_uJy_err=None
         )
         base.update(overrides)
         return ExtractionResult(**base)
@@ -579,11 +527,6 @@ def optimal_extract(image, psf_cube_fits, name, ra, dec, deblend_list = None,
     unused = wave == 0
     m = ~unused
     
-    if deblend_list is not None:
-        nblend = len(deblend_list)
-    else:
-        nblend = 0
-    
 #    # ================================================================
 #    # 2. Target pixel position
 #    #
@@ -600,26 +543,24 @@ def optimal_extract(image, psf_cube_fits, name, ra, dec, deblend_list = None,
 
 #    # (a) Cutout pixel coordinate
     wcs = fit_affine_wcs(image,m)
-    xcut, ycut = wcs(ra, dec)
-    # Now check whether the nearest pixel is actually on the detector
+    xcuts = np.zeros_like(ras)
+    ycuts = np.zeros_like(decs)
+    for ii in range(nobj):
+        xcuts[ii], ycuts[ii] = wcs(ras[ii], decs[ii])
+    # Now check whether the nearest pixel to the main source is actually on the detector
     try:
-        badflux = img[int(np.round(ycut)),int(np.round(xcut))] == 0
+        badflux = img[int(np.round(ycuts[0])),int(np.round(xcuts[0]))] == 0
     except:
         print("  [WARN] Target outside image footprint; skipping.")
         return _nan_result(near_detector_edge=True)
-    if xcut < 0 or xcut > det_w-1 or ycut < 0 or ycut > det_h-1 or badflux:
+    if xcuts[0] < 0 or xcuts[0] > det_w-1 or ycuts[0] < 0 or ycuts[0] > det_h-1 or badflux:
         print("  [WARN] Target outside image footprint; skipping.")
         return _nan_result(near_detector_edge=True)
         
-    if deblend_list is not None:
-        xcut_deblend = np.zeros(nblend)
-        ycut_deblend = np.zeros(nblend)
-        for ii in range(nblend):
-            xcut_deblend[ii], ycut_deblend[ii] = wcs(deblend_list[ii,0], deblend_list[ii,1])
 
 #    # (b) Full-detector pixel coordinate.
-    xpix_fulldet = xcut+image['col'][m].min()
-    ypix_fulldet = ycut+image['row'][m].min()
+    xpix_fulldet = xcuts[0]+image['col'][m].min()
+    ypix_fulldet = ycuts[0]+image['row'][m].min()
 
     dprint(f"  Target cutout pixel : x={xcut:.3f}, y={ycut:.3f}")
     dprint(f"  Target full-det pixel: x={xpix_fulldet:.3f}, y={ypix_fulldet:.3f}")
@@ -708,38 +649,19 @@ def optimal_extract(image, psf_cube_fits, name, ra, dec, deblend_list = None,
     # ================================================================
     # 6. Build detector-grid PSF (block-sum from oversampled model)
     # ================================================================
-    P = _make_psf_detgrid(psf_hr, oversamp, (H, W), xcut, ycut)
-    if deblend_list is not None:
-        for ii in range(nblend):
-            P.append(_make_psf_detgrid(psf_hr, oversamp, (H, W),
-                                       xcut_deblend[ii], ycut_deblend[ii])
-        P = np.array(P)
-        psf_sum = float(np.nansum(P,axis=(1,2)))
-    else:
-        P = np.nansum(P)
+    P = [_make_psf_detgrid(psf_hr, oversamp, (H, W), xcuts[ii], ycuts[ii])
+         for ii in range(len(ras))]
+    psf_sum = float(np.nansum(P,axis=(1,2)))
     dprint(f"  PSF detector-grid sum: {psf_sum:.6g} (≈1 if unit-normalised)")
 
     # ================================================================
     # 7. Build pixel masks and weights
     # ================================================================
     YY, XX = np.indices((H, W))
-    r2 = (XX - xcut) ** 2 + (YY - ycut) ** 2
-    radmask = r2 <= fit_radius_px ** 2
-    
-    if deblend_list is not None:
-        keep = np.ones(nblend,dtype=bool)
-        for ii in range(nblend):
-            r2 = (XX-xcut_deblend[ii])**2 + (YY-ycut_deblend[ii])**2
-            radmask_deblend = r2 <= fit_radius_px ** 2
-            if np.sum(radmask_deblend) == 0:
-                keep[ii] = False
-            else:
-                radmask = radmask | radmask_deblend
-        deblend_list = deblend_list[keep]
-        P = P[keep]
-        xcut_deblend = xcut_deblend[keep]
-        ycut_deblend = ycut_deblend[keep]
-        nblend = np.sum(keep)
+    radmask = np.zeros((H,W),dtype=bool)
+    for ii in range(nobj):
+        r2 = (XX - xcuts[ii]) ** 2 + (YY - ycuts[ii]) ** 2
+        radmask = radmask | (r2 <= fit_radius_px ** 2)
 
     if no_masking:
         flag_mask = np.zeros((H, W), dtype=bool)
@@ -778,71 +700,56 @@ def optimal_extract(image, psf_cube_fits, name, ra, dec, deblend_list = None,
     #
     #   Repeat until no new outliers are flagged or max_iter reached.
     #
-    good = base_good.copy()
-    outlier_mask = np.zeros((H, W), dtype=bool)
-    if deblend_list is not None:
-        f_hat = np.zeros(nblend)
-        cov = np.full((nobj,nobj),np.nan)
-        cond = np.nan
-    else:
-        f_hat = 0.0
-        var_f  = np.nan
-    converged = False
-    n_iter = 0
+    good          = base_good.copy()
+    outlier_mask  = np.zeros((H, W), dtype=bool)
+    f_hat         = np.zeros(nobj)
+    cov           = np.full((nobj, nobj), np.nan)
+    converged     = False
+    n_iter        = 0
+    cond          = np.nan
 
     for iteration in range(max_iter + 1):
         n_iter = iteration
         w = ivar * good.astype(float)
 
         # --- Step A: linear optimal estimator ---
-        if deblend_list is not None:
-            A = (P * w) @ P.T
-            b = np.array([P[ii]*w*data_safe for ii in range(nblend)])
-            cond = np.linalg.cond(A)
-            
-            if not (np.all(np.isfinite(A)) and np.all(np.isfinite(b))):
-                dprint(f"  [WARN] Non-finite normal equations at iter {iteration}.")
+        
+        A = (P * w) @ P.T
+        b = [P[ii]*w*data_safe for ii in range(nobj)]
+
+        cond = np.linalg.cond(A)
+
+        if not (np.all(np.isfinite(A)) and np.all(np.isfinite(b))):
+            dprint(f"  [WARN] Non-finite normal equations at iter {iteration}.")
             break
-            
-            if cond > 1e10:
-                # Some of the PSF profiles are nearly co-linear: the problem is
-                # ill-conditioned (sources too close / too similar).
-                dprint(f"  [WARN] Ill-conditioned system (cond={cond:.2e}); "
-                       "sources may be indistinguishable at this resolution.")
 
-            try:
-                cov = np.linalg.inv(A)
-            except np.linalg.LinAlgError:
-                dprint("  [WARN] Singular normal-equation matrix; aborting.")
-                break
+        if cond > 1e10:
+            # Some of the PSF profiles are nearly co-linear: the problem is
+            # ill-conditioned (sources too close / too similar).
+            dprint(f"  [WARN] Ill-conditioned system (cond={cond:.2e}); "
+                   "sources may be indistinguishable at this resolution.")
 
-            f_hat = cov @ b
+        try:
+            cov = np.linalg.inv(A)
+        except np.linalg.LinAlgError:
+            dprint("  [WARN] Singular normal-equation matrix; aborting.")
+            break
 
-        else:
-            num = np.sum(P[good] * ivar[good] * data_safe[good])
-            den = np.sum(P[good] ** 2 * ivar[good])
-
-            if den <= 0 or not np.isfinite(num) or not np.isfinite(den):
-                dprint(f"  [WARN] Degenerate system at iteration {iteration}; stopping.")
-                break
-
-            f_hat = num / den
-            var_f  = 1.0 / den
+        f_hat = cov @ b
 
         dprint(
-            f"  iter {iteration}: f_hat={f_hat:.5g} MJy/sr, "
-            f"σ={np.sqrt(var_f):.3g}, good_px={int(np.sum(good))}"
+            f"  iter {iteration}: f1={f1:.4g}, f2={f2:.4g}, f3={f3:.4g} MJy/sr, "
+            f"good_px={int(np.sum(good))}, cond={cond:.2e}"
         )
-
         if iteration == max_iter:
             converged = True   # reached limit; accept current solution
             break
 
         # --- Step B: residual-based outlier detection ---
-        model_px = f_hat * P if deblend_list is None else np.dot(f_hat,P)
+        model_px  = np.dot(f_hat,P)
         resid     = data_safe - model_px          # (H, W)
         sigma_px  = np.sqrt(np.where(cut_var > 0, cut_var, np.inf))
-        newly_bad = (np.abs(resid) > kappa * sigma_px) & radmask & good
+        newly_bad  = (np.abs(resid) > kappa * sigma_px) & radmask & good
 
         if not np.any(newly_bad):
             converged = True
@@ -865,11 +772,11 @@ def optimal_extract(image, psf_cube_fits, name, ra, dec, deblend_list = None,
     # ================================================================
     # 9. Chi² of the final model
     # ================================================================
-    model_final = f_hat * P
+    model_final = np.dot(f_hat,P)
     resid_final = data_safe - model_final
     w_final     = ivar * good.astype(float)
     chi2_val    = float(np.sum(resid_final ** 2 * w_final))
-    dof_val  = max(n_used - (1+nblend), 1)    # N free parameters (fluxes)
+    dof_val  = max(n_used - nobj, 1)    # N free parameters (fluxes)
 
     dprint(f"  chi²={chi2_val:.3f}, dof={dof_val}, chi²/dof={chi2_val/dof_val:.3f}")
 
@@ -879,27 +786,18 @@ def optimal_extract(image, psf_cube_fits, name, ra, dec, deblend_list = None,
     # f_hat is the surface-brightness amplitude [MJy/sr].
     # Integrated flux = f_hat × Ω_pix × Σ P_det
     # (Σ P_det ≈ 1 for a unit-normalised PSF)
-    f_hat_err = float(np.sqrt(var_f)) if np.isfinite(var_f) else np.nan
+    var_f = np.diag(cov)
+    f_hat_err = np.sqrt(var_f)
 
-    if np.isfinite(omega_sr) and psf_sum > 0:
-        flux_uJy     = f_hat * omega_sr * psf_sum * 1e12
-        flux_uJy_err = f_hat_err * omega_sr * psf_sum * 1e12
-    else:
-        flux_uJy = flux_uJy_err = np.nan
+    flux_uJy     = f_hat * omega_sr * psf_sum * 1e12
+    flux_uJy_err = f_hat_err * omega_sr * psf_sum * 1e12
 
-    snr = f_hat / f_hat_err if (np.isfinite(f_hat_err) and f_hat_err > 0) else np.nan
+    snr = f_hat / f_hat_err
 
-    dprint(
-        f"  Optimal flux: {f_hat:.4g} ± {f_hat_err:.3g} MJy/sr  "
-        f"≈ {flux_uJy:.4g} ± {flux_uJy_err:.3g} µJy  S/N={snr:.2f}"
-    )
-    
-    # Let's also get the aperture flux for comparison
-    aper_radius_px = 2.0 # This should get most of the flux
-    apermask = r2 <= aper_radius_px ** 2
-    aper_flux = np.sum(data_safe[apermask])
-    aper_flux_uJy = aper_flux * omega_sr * 1e12
-    aper_flux_uJy_err = np.sqrt(np.sum(cut_var[apermask & (data_safe != 0)]))
+#    dprint(
+#        f"  Optimal fluxes: {f_hat:.4g} ± {f_hat_err:.3g} MJy/sr  "
+#        f"≈ {flux_uJy:.4g} ± {flux_uJy_err:.3g} µJy  S/N={snr:.2f}"
+#    )
 
     # ================================================================
     # 11. Spectral WCS at target position
@@ -907,14 +805,14 @@ def optimal_extract(image, psf_cube_fits, name, ra, dec, deblend_list = None,
     
     # Use xcut/ycut and bilinearly interpolate from nearby pixels
     # this is quite dangerous, so lots of checks to make sure nothing bad creeps in
-    x1 = int(xcut); x2 = x1+1; y1 = int(ycut); y2 = y1+1
+    x1 = int(xcuts[0]); x2 = x1+1; y1 = int(ycuts[0]); y2 = y1+1
     try:
         if wave[y1,x1] == 0 or wave[y2,x1] == 0 or wave[y1,x2] == 0 or wave[y2,x2] == 0:
             wv_um = np.nan
             wv_width_um = np.nan
         else:
-            wv_um = wave[y1,x1]*(x2-xcut)*(y2-ycut)+wave[y2,x1]*(x2-xcut)*(ycut-y1)+wave[y1,x2]*(xcut-x1)*(y2-ycut)+wave[y2,x2]*(xcut-x1)*(ycut-y1)
-            wv_width_um = dwave[y1,x1]*(x2-xcut)*(y2-ycut)+dwave[y2,x1]*(x2-xcut)*(ycut-y1)+dwave[y1,x2]*(xcut-x1)*(y2-ycut)+dwave[y2,x2]*(xcut-x1)*(ycut-y1)
+            wv_um = wave[y1,x1]*(x2-xcuts[0])*(y2-ycut)+wave[y2,x1]*(x2-xcuts[0])*(ycuts[0]-y1)+wave[y1,x2]*(xcuts[0]-x1)*(y2-ycuts[0])+wave[y2,x2]*(xcuts[0]-x1)*(ycuts[0]-y1)
+            wv_width_um = dwave[y1,x1]*(x2-xcuts[0])*(y2-ycuts[0])+dwave[y2,x1]*(x2-xcuts[0])*(ycuts[0]-y1)+dwave[y1,x2]*(xcuts[0]-x1)*(y2-ycut)+dwave[y2,x2]*(xcuts[0]-x1)*(ycuts[0]-y1)
     except:
         wv_um = np.nan
         wv_width_um = np.nan
@@ -972,8 +870,6 @@ def optimal_extract(image, psf_cube_fits, name, ra, dec, deblend_list = None,
         opt_snr=float(snr),
         opt_chi2=float(chi2_val),
         opt_dof=int(dof_val),
-        aper_flux_uJy=float(aper_flux_uJy),
-        aper_flux_uJy_err=float(aper_flux_uJy_err),
         xpix_fulldet=float(xpix_fulldet),
         ypix_fulldet=float(ypix_fulldet),
         xpix_cutout=float(xcut),
@@ -985,66 +881,88 @@ def optimal_extract(image, psf_cube_fits, name, ra, dec, deblend_list = None,
 # Diagnostic figure
 # ---------------------------------------------------------------------------
 
-def _plot_extraction(data, model, psf, ivar, good, outlier_mask, radmask,
-                     xcut, ycut, fit_radius_px, f_hat, f_hat_err, flux_uJy, snr,
-                     chi2, dof, name, save_or_show_fn):
-    """Four-panel diagnostic: data, model, residual, and pixel classification."""
+def _plot_joint(data, model, P, good, outlier_mask, radmask,
+                xcuts, ycuts, fit_radius_px,
+                f, sig, snr,
+                chi2, dof, names, show_figs, save_figs, results_dir,
+                fits_path, obsid):
     import matplotlib.pyplot as plt
     import matplotlib.patches as mpatches
+    from matplotlib.colors import ListedColormap
 
-    fig, axs = plt.subplots(1, 4, figsize=(18, 4.5))
-    fig.suptitle(
-        f"{name}  |  flux = {f_hat:.4g} ± {f_hat_err:.3g} MJy/sr"
-        f"  ≈ {flux_uJy:.4g} µJy  |  S/N = {snr:.1f}"
-        f"  |  χ²/dof = {chi2:.1f}/{dof}",
-        fontsize=12,
-    )
+    fig, axs = plt.subplots(1, 4, figsize=(15, 4.5))
+#    fig.suptitle(
+#        f"{name1}: {f1:.4g}±{sig1:.3g} MJy/sr ({flux1_uJy:.4g} µJy, "
+#        f"S/N={snr1:.1f})   |   "
+#        f"{name2}: {f2:.4g}±{sig2:.3g} MJy/sr ({flux2_uJy:.4g} µJy, "
+#        f"S/N={snr2:.1f})   |   "
+#        f"{name3}: {f3:.4g}±{sig3:.3g} MJy/sr ({flux3_uJy:.4g} µJy, "
+#        f"S/N={snr3:.1f})   |   χ²/dof={chi2:.1f}/{dof}",
+#        fontsize=12,
+#    )
 
     resid = data - model
+    vmax  = np.nanpercentile(np.abs(data[radmask]), 99.5)
+    vmin  = np.nanpercentile(np.abs(data[radmask]),  0.5)
+    res_std = np.nanstd(resid[good]) if np.any(good) else 1.0
 
-    # Shared colour scale for data / model
-    vmax = np.nanpercentile(np.abs(data[radmask]), 99.5)
-    vmin = np.nanpercentile(np.abs(data[radmask]),  0.5)
+    axs[0].imshow(data,       origin="lower", vmin=vmin, vmax=vmax, cmap="magma")
+    axs[0].set_title("Data (bkg-subtracted)")
+#    axs[1].imshow(f1 * P1,    origin="lower", vmin=vmin, vmax=vmax, cmap="magma")
+#    axs[1].set_title(f"Model: {name1}")
+#    axs[2].imshow(f2 * P2,    origin="lower", vmin=vmin, vmax=vmax, cmap="magma")
+#    axs[2].set_title(f"Model: {name2}")
+    axs[1].imshow(np.dot(F,P), origin="lower", vmin=vmin, vmax=vmax, cmap="magma")
+    axs[1].set_title(f"Joint model")
+    axs[2].imshow(resid,       origin="lower",
+                  vmin=-3 * res_std, vmax=3 * res_std, cmap="RdBu_r")
+    axs[2].set_title("Residual")
 
-    kw_img  = dict(origin="lower", vmin=vmin, vmax=vmax, cmap="magma")
-    kw_res  = dict(origin="lower",
-                   vmin=-3 * np.nanstd(resid[good]) if np.any(good) else -1,
-                   vmax=3 * np.nanstd(resid[good]) if np.any(good) else 1,
-                   cmap='RdBu_r')
-
-    axs[0].imshow(data,   **kw_img); axs[0].set_title("Data (bkg-subtracted)")
-    axs[1].imshow(model,  **kw_img); axs[1].set_title("Optimal model  (f·P)")
-    axs[2].imshow(resid,  **kw_res); axs[2].set_title("Residual  (data − model)")
-
-    # Panel 4: pixel classification map
-    classification = np.zeros(data.shape, dtype=int)  # 0 = outside radius
-    classification[radmask]                            = 1  # in radius, used
-    classification[radmask & ~good & ~outlier_mask]    = 2  # flagged
-    classification[outlier_mask & radmask]             = 3  # outlier-rejected
-
-    from matplotlib.colors import ListedColormap
+    # Pixel classification
+    cls = np.zeros(data.shape, dtype=int)
+    cls[radmask]                          = 1   # used
+    cls[radmask & ~good & ~outlier_mask]  = 2   # flag-masked
+    cls[outlier_mask & radmask]           = 3   # outlier-rejected
     cmap = ListedColormap(["white", "steelblue", "orange", "red"])
-    axs[3].imshow(classification, origin="lower", cmap=cmap, vmin=0, vmax=3)
+    axs[3].imshow(cls, origin="lower", cmap=cmap, vmin=0, vmax=3)
     axs[3].set_title("Pixel classification")
-    legend_elements = [
+    legend_els = [
         mpatches.Patch(facecolor="white",     edgecolor="k", label="outside radius"),
-        mpatches.Patch(facecolor="steelblue", label="used in fit"),
+        mpatches.Patch(facecolor="steelblue", label="used"),
         mpatches.Patch(facecolor="orange",    label="flag-masked"),
         mpatches.Patch(facecolor="red",       label="outlier-rejected"),
     ]
-    axs[3].legend(handles=legend_elements, loc="upper right", fontsize=9)
+    axs[3].legend(handles=legend_els, loc="upper right", fontsize=9)
 
-    # Overlay: target position and fit radius on every panel
+    markers = [(xcuts[ii],ycuts[ii],"+","white",names[ii]) for ii in range(len(f))]
     for ax in axs:
-        ax.scatter([xcut], [ycut], marker="+", s=60, color="white", zorder=5)
-        circle = plt.Circle(
-            (xcut, ycut), fit_radius_px,
-            fill=False, linestyle="--", color="white", linewidth=1.2,
-        )
-        ax.add_patch(circle)
+        for xc, yc, mk, col, lbl in markers:
+            ax.scatter([xc], [yc], marker=mk, s=60, color=col,
+                       zorder=5, label=lbl)
+        for xc, yc in [(xcut1, ycut1), (xcut2, ycut2)]:
+            ax.add_patch(plt.Circle(
+                (xc, yc), fit_radius_px,
+                fill=False, linestyle="--", color="white", linewidth=1.0,
+            ))
+
+    handles, labels = axs[0].get_legend_handles_labels()
+    if handles:
+        axs[0].legend(handles, labels, loc="lower right", fontsize=9)
 
     plt.tight_layout()
-    save_or_show_fn(fig, "optimal_extraction")
+
+    if show_figs:
+        plt.show()
+    elif save_figs and results_dir:
+        figs_dir = os.path.join(results_dir, f"{name[0]}_joint_figs")
+        Path(figs_dir).mkdir(parents=True, exist_ok=True)
+        tag = obsid or Path(fits_path).stem
+        fig.savefig(
+            Path(figs_dir) / f"{name[0]}_{tag}_joint.png", dpi=130
+        )
+    plt.close(fig)
+
+
 
 # ---------------------------------------------------------------------------
 # Input file reader
@@ -1112,8 +1030,6 @@ def _build_parser():
     # TODO: Reintroduce threading for talltable queries
 #    p.add_argument("--dl-threads", type=int, default=8,
 #                   help="Number of simultaneous downloads (default = 8)")
-    p.add_argument("--nchunks", type=int, default=2,
-                   help="Number of wavelength chunks to divide detectors in case of PixelQuery failure")
 
     # Extraction options
     p.add_argument("--fit-radius", type=float, default=4.0, metavar="PX",
@@ -1126,8 +1042,6 @@ def _build_parser():
                    help="Ignore flag-based pixel masking in the fit")
     p.add_argument("--linear-bkg", action="store_true",
                    help="Fit a linear model to the background instead of local median")
-    p.add_argument("--aperture-extract", action="store_true",
-                   help="Perform aperture photometry instead of optimal extraction")
 
     # Output / display
     p.add_argument("--debug", action="store_true",
@@ -1195,132 +1109,121 @@ def main(argv=None):
     parser = _build_parser()
     args = parser.parse_args(argv)
 
-    # Validate single-target mode
+    # Validate multi-target mode
     if args.ra is not None and args.dec is None:
         parser.error("--dec is required when --ra is given")
 
     # Build target list
-    if args.input:
+    if args.input is None:
+        parser.error("Multi-object mode requires an input file")
+    else:
         table = _read_input_file(args.input)
         targets = [
             (str(row["name"]).strip(), float(row["ra"]), float(row["dec"]))
             for row in table
         ]
-    else:
-        targets = [(args.name, args.ra, args.dec)]
+        nobj = len(targets)
+        names = [targets[ii][0] for ii in range(nobj)]
+        ras = [targets[ii][1] for ii in range(nobj)]
+        decs = [targets[ii][2] for ii in range(nobj)]
         
     # Load in table of all SPHEREx image metadata
     image_tab = pyarrow.parquet.read_table(os.path.join(args.image_tab_path,"image.parquet"))
     # Load in PSF model cubes
-    psf_cubes = [fits.open(os.path.join(args.psf_path,f'average_psf_D{ii+1}_spx_cal-psf-v5-2026-082.fits')) for ii in range(6)]
+    psf_cubes = [fits.open(os.path.join(args.psf_path,f'average_psf_D{ii}_spx_cal-psf-v5-2026-082.fits')) for ii in range(1,7)]
 
-    failed = []
+    all_results: List[ExtractionResult] = []
+    os.makedirs(args.results_dir, exist_ok=True)
 
-    for name, ra, dec in targets:
-        all_results: List[ExtractionResult] = []
-        os.makedirs(args.results_dir, exist_ok=True)
+    print(f"\n{'='*60}")
+    print(f"Target: {name}  RA={ra:.6f}  Dec={dec:.6f}")
+
+    # ------------------------------------------------------------------
+    # Step 1: download cutout pixels
+    # ------------------------------------------------------------------
     
-        print(f"\n{'='*60}")
-        print(f"Target: {name}  RA={ra:.6f}  Dec={dec:.6f}")
+    csv_path = os.path.join(args.results_dir, f"{name[0]}_joint_spherex_photometry.csv")
 
-        # ------------------------------------------------------------------
-        # Step 1: download cutout pixels
-        # ------------------------------------------------------------------
-        
-        csv_path = os.path.join(args.results_dir, f"{name}_spherex_photometry.csv")
-        if len(targets) > 1 and os.path.isfile(csv_path):
-            print(f"  Already extracted this object, skipping to the next one.")
-            continue
-        
+    try:
+        cutout_pixels = download_cutout_pixels(ra=ra,dec=dec,cutout_size_deg=args.cutout_size)
+    except:
+        print("   PixelQuery failed. Trying again with a divide-and-conquer strategy...")
+        sleep(5)
+        # Try to acquire data with a cross-shape pattern of smaller overlapping sky patches:
+        #
+        #            O
+        #           OOO
+        #            O
+        #
+        # This will lose some pixels in the corners, but should work better in deep fields?
+        size = 0.6*args.cutout_size
         try:
-            cutout_pixels = download_cutout_pixels(ra=ra,dec=dec,cutout_size_deg=args.cutout_size)
-            nodup = True
+            # Should probably wrap all this up into a function for clarity
+            print("   Query 1/5 (0,0)")
+            cutout_pixels1 = download_cutout_pixels(ra=ra,dec=dec,cutout_size_deg=size)
+            print("   Query 2/5 (1,0)")
+            cutout_pixels2 = download_cutout_pixels(ra=ra+size/2,dec=dec,cutout_size_deg=size)
+            print("   Query 3/5 (-1,0)")
+            cutout_pixels3 = download_cutout_pixels(ra=ra-size/2,dec=dec,cutout_size_deg=size)
+            print("   Query 4/5 (0,1)")
+            cutout_pixels4 = download_cutout_pixels(ra=ra,dec=dec+size/2,cutout_size_deg=size)
+            print("   Query 5/5 (0,-1)")
+            cutout_pixels5 = download_cutout_pixels(ra=ra,dec=dec-size/2,cutout_size_deg=size)
+            cutout_pixels = pyarrow.concat_tables([cutout_pixels1,cutout_pixels2,cutout_pixels3,
+                                                   cutout_pixels4,cutout_pixels5])
         except:
-            print(f"   PixelQuery failed. Trying again in {6*args.nchunks} wavelength chunks...")
-            sleep(3)
-            try:
-                nwv1234 = 4*args.nchunks
-                wvmin1234 = 0.733
-                wvmax1234 = 3.811
-                
-                nwv56 = 2*args.nchunks
-                wvmin56 = 3.809
-                wvmax56 = 5.015
-                
-                cutout_pixels_wv = [None for ii in range(nwv1234+nwv56)]
-                
-                wvbins = 10**np.linspace(np.log10(wvmin1234),np.log10(wvmax1234),nwv1234+1)
-                for ii in range(nwv1234):
-                    print(f"   Query {ii+1}/{nwv1234+nwv56}")
-                    cutout_pixels_wv[ii] = download_cutout_pixels(ra=ra,dec=dec,cutout_size_deg=args.cutout_size,
-                                                                  wvbounds=[wvbins[ii],wvbins[ii+1]])
-                 
-                wvbins = 10**np.linspace(np.log10(wvmin56),np.log10(wvmax56),nwv56+1)
-                for ii in range(nwv56):
-                    print(f"   Query {nwv1234+ii+1}/{nwv1234+nwv56}")
-                    cutout_pixels_wv[nwv1234+ii] = download_cutout_pixels(ra=ra,dec=dec,cutout_size_deg=args.cutout_size,
-                                                                  wvbounds=[wvbins[ii],wvbins[ii+1]])
-                                                                  
-                cutout_pixels = pyarrow.concat_tables(cutout_pixels_wv)
-                nodup = False
-            except:
-                print("   PixelQuery failed yet again. Try increasing --nchunks or reducing the primary cutout size.")
-                sleep(5)
-                failed.append(name)
-                continue
-        
-        cutout_images = cutout_pixels_to_images(cutout_pixels,image_tab,ra,dec,args.cutout_size,nodup=nodup)
+            print("   PixelQuery failed yet again. Try reducing the primary cutout size.")
+            sleep(5)
+            failed.append(name)
+            continue
+    
+    cutout_images = cutout_pixels_to_images(cutout_pixels,image_tab,ra,dec,args.cutout_size)
 
-        # ------------------------------------------------------------------
-        # Step 2: optimal extraction from each cutout
-        # ------------------------------------------------------------------
-        for image in cutout_images:
-            det = image['detector_id']
-            result = optimal_extract(
-                image=image,
-                psf_cube_fits=psf_cubes[det-1],
-                name=name,
-                ra=ra,
-                dec=dec,
-                fit_radius_px=args.fit_radius,
-                kappa=args.kappa,
-                max_iter=args.max_iter,
-                linear_bkg=args.linear_bkg,
-                debug=args.debug,
-                show_figs=args.show_figs,
-                save_figs=args.save_figs,
-                results_dir=args.results_dir,
-                no_masking=args.no_masking,
-            )
-            if result.wv_um is not None and result.wv_um is not np.nan:
-                all_results.append(result)
-                print(
-                        f"    λ={result.wv_um or 'N/A'} µm  "
-                        f"flux={result.opt_flux_MJysr or 'N/A'} MJy/sr"
-                        f"  ({result.opt_flux_uJy or 'N/A'} µJy)"
-                        f"  S/N={result.opt_snr or 'N/A'}"
-                        f"  n_used={result.n_pix_used}"
-                        f"  n_outlier={result.n_pix_outlier}"
-                        f"  converged={result.converged}"
-                     )
-        # ------------------------------------------------------------------
-        # Combined CSV + TXT (always written if there are any results)
-        # ------------------------------------------------------------------
-        print(f"\n{'='*60}")
-        if all_results:
-            csv_path = os.path.join(args.results_dir, f"{name}_spherex_photometry.csv")
-            os.makedirs(os.path.dirname(csv_path) or ".", exist_ok=True)
-            _results_to_csv(all_results, csv_path)
-            txt_path = os.path.join(args.results_dir, f"{name}_spherex_spectrum.txt")
-            _spec_to_txt(all_results, txt_path)
-        else:
-            print("  No results to write.")
-            
-    if len(failed) > 0:
-        print("The following targets failed to download: ",end="")
-        for name in failed:
-            print(name+" ",end="")
-        print(".")
+    # ------------------------------------------------------------------
+    # Step 2: optimal extraction from each cutout
+    # ------------------------------------------------------------------
+    for image in cutout_images:
+        det = image['detector_id']
+        result = optimal_extract(
+            image=image,
+            psf_cube_fits=psf_cubes[det-1],
+            nobj=nobj,
+            names=names,
+            ras=ras,
+            decs=decs,
+            fit_radius_px=args.fit_radius,
+            kappa=args.kappa,
+            max_iter=args.max_iter,
+            linear_bkg=args.linear_bkg,
+            debug=args.debug,
+            show_figs=args.show_figs,
+            save_figs=args.save_figs,
+            results_dir=args.results_dir,
+            no_masking=args.no_masking,
+        )
+        if result.wv_um is not None and result.wv_um is not np.nan:
+            all_results.append(result)
+            print(
+                    f"    λ={result.wv_um or 'N/A'} µm  "
+                    f"flux={result.opt_flux_MJysr or 'N/A'} MJy/sr"
+                    f"  ({result.opt_flux_uJy or 'N/A'} µJy)"
+                    f"  S/N={result.opt_snr or 'N/A'}"
+                    f"  n_used={result.n_pix_used}"
+                    f"  n_outlier={result.n_pix_outlier}"
+                    f"  converged={result.converged}"
+                 )
+    # ------------------------------------------------------------------
+    # Combined CSV + TXT (always written if there are any results)
+    # ------------------------------------------------------------------
+    print(f"\n{'='*60}")
+    if all_results:
+        csv_path = os.path.join(args.results_dir, f"{names[0]}_joint_spherex_photometry.csv")
+        os.makedirs(os.path.dirname(csv_path) or ".", exist_ok=True)
+        _results_to_csv(all_results, csv_path)
+        txt_path = os.path.join(args.results_dir, f"{names[0]}_joint_spherex_spectrum.txt")
+        _spec_to_txt(all_results, txt_path)
+    else:
+        print("  No results to write.")
 
     return 0
 
