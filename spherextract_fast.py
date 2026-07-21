@@ -804,7 +804,7 @@ def optimal_extract(image, psf_cube_fits, name, ra, dec, deblend_list = None,
             
             if not (np.all(np.isfinite(A)) and np.all(np.isfinite(b))):
                 dprint(f"  [WARN] Non-finite normal equations at iter {iteration}.")
-            break
+                break
             
             if cond > 1e10:
                 # Some of the PSF profiles are nearly co-linear: the problem is
@@ -830,10 +830,11 @@ def optimal_extract(image, psf_cube_fits, name, ra, dec, deblend_list = None,
 
             f_hat = num / den
             var_f  = 1.0 / den
+            
 
         dprint(
-            f"  iter {iteration}: f_hat={f_hat:.5g} MJy/sr, "
-            f"σ={np.sqrt(var_f):.3g}, good_px={int(np.sum(good))}"
+            f"  iter {iteration}: f_hat={f_hat[0] if deblend_list is not None else f_hat:.5g} MJy/sr, "
+            f"σ={np.sqrt(cov[0,0]) if deblend_list is not None else np.sqrt(var_f):.3g}, good_px={int(np.sum(good))}"
         )
 
         if iteration == max_iter:
@@ -841,7 +842,7 @@ def optimal_extract(image, psf_cube_fits, name, ra, dec, deblend_list = None,
             break
 
         # --- Step B: residual-based outlier detection ---
-        model_px = f_hat * P if deblend_list is None else (f_hat*P.T).T
+        model_px = f_hat * P if deblend_list is None else np.sum((f_hat*P.T).T,axis=0)
         resid     = data_safe - model_px          # (H, W)
         sigma_px  = np.sqrt(np.where(cut_var > 0, cut_var, np.inf))
         newly_bad = (np.abs(resid) > kappa * sigma_px) & radmask & good
