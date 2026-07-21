@@ -54,8 +54,6 @@ import pyarrow
 import pyarrow.parquet
 from time import sleep
 
-from astroquery.ipac.irsa import Irsa
-from astroquery.gaia import Gaia
 from astropy.coordinates import SkyCoord
 import astropy.units as u
 
@@ -428,29 +426,59 @@ _BAD_BITS_MISC = (
 # Helper: Get nearby objects via astroquery
 def find_nearby_objects(ra, dec,
                         catalog='catwise',
-                        deblend_radius=30.0, maglim=17.3):
+                        deblend_radius=20.0, maglim=None):
     """
     Locate nearby objects for deblending purposes.
     """
     coord = SkyCoord(ra,dec,unit='deg',frame='icrs')
     if catalog == 'catwise':
         print(f"    Querying CatWISE2020 for nearby objects brighter than W1={maglim+2.7} AB mag within {deblend_radius} arcsec")
+        
+        from astroquery.ipac.irsa import Irsa
+        
         all_objs = Irsa.query_region(coordinates=coord,spatial='Cone',catalog='catwise_2020',
                                  radius=deblend_radius*u.arcsec)
-        target = np.argmin(np.sqrt((all_objs['ra']-ra)**2+(all_objs['dec']-dec)**2))
-        keep = (np.ma.getdata(all_objs['w1mpro']) < maglim) & (np.arange(len(all_objs)) != target)
+                                 
+        # Trim faint objects
+        if maglim is None:
+            maglim = 17.0 # reasonable default for W1
+        keep = (np.ma.getdata(all_objs['w1mpro']) < maglim)
+                                 
+        # Remove target object if present
+        obj_coords = [SkyCoord(np.ma.getdata(all_objs['ra'])[ii], np.ma.getdata(all_objs['dec'])[ii],
+                               unit='deg', frame='icrs') for ii in range(len(all_objs))]
+        seps = np.array([coord.separation(obj_coords[ii]).arcsec for ii in range(len(all_objs))])
+        if np.min(dists) < 2.0:                # this minimum might be a bit too big, but closer than that
+            target = np.argmin(dists)          # and I wouldn't expect deblending to work well anyway, right?
+            keep = keep & (np.arange(len(all_objs)) != target)
+            
         if np.sum(keep) > 0:
             deblend_list = np.vstack([np.ma.getdata(all_objs['ra'])[keep],np.ma.getdata(all_objs['dec'])[keep]]).T
         else:
             deblend_list = None
     elif catalog == 'gaia':
         print(f"    Querying Gaia for nearby objects brighter than G_RP={maglim} mag within {deblend_radius} arcsec")
+        
+        from astroquery.gaia import Gaia
+        
         j = Gaia.cone_search_async(coord, radius=u.Quantity(deblend_radius, u.arcsec))
         r = j.get_results()
-        target = np.argmin(np.sqrt((r['ra']-ra)**2+(r['dec']-dec)**2))
-        keep = (r['phot_rp_mean_mag'] < maglim) & (np.arange(len(r)) != target)
+
+        # Trim faint objects
+        if maglim is None:
+            maglim = 19.7 # reasonable default for GRP
+        keep = (np.ma.getdata(r['phot_rp_mean_mag']) < maglim)
+                                 
+        # Remove target object if present
+        obj_coords = [SkyCoord(np.ma.getdata(r['ra'])[ii], np.ma.getdata(r['dec'])[ii],
+                               unit='deg', frame='icrs') for ii in range(len(r))]
+        seps = np.array([coord.separation(obj_coords[ii]).arcsec for ii in range(len(r))])
+        if np.min(dists) < 2.0:                # this minimum might be a bit too big, but closer than that
+            target = np.argmin(dists)          # and I wouldn't expect deblending to work well anyway, right?
+            keep = keep & (np.arange(len(r)) != target)
+
         if np.sum(keep) > 0:
-            deblend_list = np.vstack([r['ra'][keep],r['dec'][keep]]).T
+            deblend_list = np.vstack([np.ma.getdata(r['ra'])[keep],rp.ma.getdata(r['dec'])[keep]]).T
         else:
             deblend_list = None
     else:
@@ -1138,6 +1166,10 @@ def _build_parser():
                    help="Fit a linear model to the background instead of local median")
     p.add_argument("--auto-deblend", type=str, default=None,
                    help="Automatically deblend target from nearby sources. Use 'catwise' or 'gaia")
+    p.add_argument("--deblend-radius", type=float, default=20.0,
+                   help="Maximum distance to search for deblending objects in arcsec")
+    p.add_argument("--deblend-maglim", type=float, default=None,
+                   help="Minimum magnitude of deblended objects. W1 for catwise (Vega mag) or GRP mag for gaia")
     
 
     # Output / display
@@ -1283,7 +1315,8 @@ def main(argv=None):
         cutout_images = cutout_pixels_to_images(cutout_pixels,image_tab,ra,dec,args.cutout_size,nodup=nodup)
         
         if args.auto_deblend is not None:
-            deblend_list = find_nearby_objects(ra, dec, catalog=args.auto_deblend)
+            deblend_list = find_nearby_objects(ra, dec, catalog=args.auto_deblend,
+                                               deblend_radius=args.deblend_radius, maglim=args.deblend_maglim)
         else:
             deblend_list = None
 
