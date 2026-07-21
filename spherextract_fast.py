@@ -427,23 +427,23 @@ _BAD_BITS_MISC = (
 
 # Helper: Get nearby objects via astroquery
 def find_nearby_objects(ra, dec,
-                        catalog='irsa_catwise_2020',
+                        catalog='catwise',
                         deblend_radius=30.0, maglim=17.3):
     """
     Locate nearby objects for deblending purposes.
     """
     coord = SkyCoord(ra,dec,unit='deg',frame='icrs')
-    if catalog is 'irsa_catwise_2020':
-        print("    Querying CatWISE2020 for nearby objects brighter than W1={maglim+2.7} AB mag within {deblend_radius} arcsec")
+    if catalog == 'catwise':
+        print(f"    Querying CatWISE2020 for nearby objects brighter than W1={maglim+2.7} AB mag within {deblend_radius} arcsec")
         all_objs = Irsa.query_region(coordinates=coord,spatial='Cone',catalog='catwise_2020',
                                  radius=deblend_radius*u.arcsec)
         target = np.argmin(np.sqrt((all_objs['ra']-ra)**2+(all_objs['dec']-dec)**2))
-        keep = (all_objs['w1mpro'] < maglim) & (np.arange(len(all_objs)) != target)
+        keep = (np.ma.getdata(all_objs['w1mpro']) < maglim) & (np.arange(len(all_objs)) != target)
         if np.sum(keep) > 0:
-            deblend_list = np.vstack([all_objs['ra'][keep],all_objs['dec'][keep]]).T
+            deblend_list = np.vstack([np.ma.getdata(all_objs['ra'])[keep],np.ma.getdata(all_objs['dec'])[keep]]).T
         else:
             deblend_list = None
-    elif catalog is 'gaia':
+    elif catalog == 'gaia':
         print(f"    Querying Gaia for nearby objects brighter than G_RP={maglim} mag within {deblend_radius} arcsec")
         j = Gaia.cone_search_async(coord, radius=u.Quantity(deblend_radius, u.arcsec))
         r = j.get_results()
@@ -710,14 +710,15 @@ def optimal_extract(image, psf_cube_fits, name, ra, dec, deblend_list = None,
     # ================================================================
     P = _make_psf_detgrid(psf_hr, oversamp, (H, W), xcut, ycut)
     if deblend_list is not None:
+        P = [P]
         for ii in range(nblend):
             P.append(_make_psf_detgrid(psf_hr, oversamp, (H, W),
-                                       xcut_deblend[ii], ycut_deblend[ii])
+                                       xcut_deblend[ii], ycut_deblend[ii]))
         P = np.array(P)
-        psf_sum = float(np.nansum(P,axis=(1,2)))
+        psf_sum = np.nansum(P,axis=(1,2))
     else:
-        P = np.nansum(P)
-    dprint(f"  PSF detector-grid sum: {psf_sum:.6g} (≈1 if unit-normalised)")
+        psf_sum = float(np.nansum(P))
+        dprint(f"  PSF detector-grid sum: {psf_sum:.6g} (≈1 if unit-normalised)")
 
     # ================================================================
     # 7. Build pixel masks and weights
@@ -736,7 +737,7 @@ def optimal_extract(image, psf_cube_fits, name, ra, dec, deblend_list = None,
             else:
                 radmask = radmask | radmask_deblend
         deblend_list = deblend_list[keep]
-        P = P[keep]
+        P[1:] = P[1:][keep]
         xcut_deblend = xcut_deblend[keep]
         ycut_deblend = ycut_deblend[keep]
         nblend = np.sum(keep)
@@ -781,8 +782,8 @@ def optimal_extract(image, psf_cube_fits, name, ra, dec, deblend_list = None,
     good = base_good.copy()
     outlier_mask = np.zeros((H, W), dtype=bool)
     if deblend_list is not None:
-        f_hat = np.zeros(nblend)
-        cov = np.full((nobj,nobj),np.nan)
+        f_hat = np.zeros(nblend+1)
+        cov = np.full((nblend+1,nblend+1),np.nan)
         cond = np.nan
     else:
         f_hat = 0.0
@@ -792,12 +793,13 @@ def optimal_extract(image, psf_cube_fits, name, ra, dec, deblend_list = None,
 
     for iteration in range(max_iter + 1):
         n_iter = iteration
-        w = ivar * good.astype(float)
 
         # --- Step A: linear optimal estimator ---
         if deblend_list is not None:
-            A = (P * w) @ P.T
-            b = np.array([P[ii]*w*data_safe for ii in range(nblend)])
+            Phi = P.reshape((nblend+1,H*W))
+            w = ivar * good.astype(float)
+            A = (Phi * w.flatten()) @ Phi.T
+            b = np.array([np.sum(P[ii]*w*data_safe) for ii in range(nblend+1)])
             cond = np.linalg.cond(A)
             
             if not (np.all(np.isfinite(A)) and np.all(np.isfinite(b))):
@@ -816,7 +818,7 @@ def optimal_extract(image, psf_cube_fits, name, ra, dec, deblend_list = None,
                 dprint("  [WARN] Singular normal-equation matrix; aborting.")
                 break
 
-            f_hat = cov @ b
+            f_hat = np.linalg.solve(A,b)
 
         else:
             num = np.sum(P[good] * ivar[good] * data_safe[good])
@@ -839,7 +841,7 @@ def optimal_extract(image, psf_cube_fits, name, ra, dec, deblend_list = None,
             break
 
         # --- Step B: residual-based outlier detection ---
-        model_px = f_hat * P if deblend_list is None else np.dot(f_hat,P)
+        model_px = f_hat * P if deblend_list is None else (f_hat*P.T).T
         resid     = data_safe - model_px          # (H, W)
         sigma_px  = np.sqrt(np.where(cut_var > 0, cut_var, np.inf))
         newly_bad = (np.abs(resid) > kappa * sigma_px) & radmask & good
@@ -865,7 +867,7 @@ def optimal_extract(image, psf_cube_fits, name, ra, dec, deblend_list = None,
     # ================================================================
     # 9. Chi² of the final model
     # ================================================================
-    model_final = f_hat * P
+    model_final = f_hat * P if deblend_list is None else (f_hat*P.T).T
     resid_final = data_safe - model_final
     w_final     = ivar * good.astype(float)
     chi2_val    = float(np.sum(resid_final ** 2 * w_final))
@@ -879,7 +881,14 @@ def optimal_extract(image, psf_cube_fits, name, ra, dec, deblend_list = None,
     # f_hat is the surface-brightness amplitude [MJy/sr].
     # Integrated flux = f_hat × Ω_pix × Σ P_det
     # (Σ P_det ≈ 1 for a unit-normalised PSF)
-    f_hat_err = float(np.sqrt(var_f)) if np.isfinite(var_f) else np.nan
+    if deblend_list is not None:
+        f_hat_err = float(np.sqrt(cov[0,0])) if np.isfinite(cov[0,0]) else np.nan
+    else:
+        f_hat_err = float(np.sqrt(var_f)) if np.isfinite(var_f) else np.nan
+
+    if deblend_list is not None:
+        f_hat = f_hat[0] # nuke the rest of the objects
+        psf_sum = psf_sum[0]
 
     if np.isfinite(omega_sr) and psf_sum > 0:
         flux_uJy     = f_hat * omega_sr * psf_sum * 1e12
@@ -1126,8 +1135,9 @@ def _build_parser():
                    help="Ignore flag-based pixel masking in the fit")
     p.add_argument("--linear-bkg", action="store_true",
                    help="Fit a linear model to the background instead of local median")
-    p.add_argument("--aperture-extract", action="store_true",
-                   help="Perform aperture photometry instead of optimal extraction")
+    p.add_argument("--auto-deblend", type=str, default=None,
+                   help="Automatically deblend target from nearby sources. Use 'catwise' or 'gaia")
+    
 
     # Output / display
     p.add_argument("--debug", action="store_true",
@@ -1270,6 +1280,11 @@ def main(argv=None):
                 continue
         
         cutout_images = cutout_pixels_to_images(cutout_pixels,image_tab,ra,dec,args.cutout_size,nodup=nodup)
+        
+        if args.auto_deblend is not None:
+            deblend_list = find_nearby_objects(ra, dec, catalog=args.auto_deblend)
+        else:
+            deblend_list = None
 
         # ------------------------------------------------------------------
         # Step 2: optimal extraction from each cutout
@@ -1282,6 +1297,7 @@ def main(argv=None):
                 name=name,
                 ra=ra,
                 dec=dec,
+                deblend_list=deblend_list,
                 fit_radius_px=args.fit_radius,
                 kappa=args.kappa,
                 max_iter=args.max_iter,
