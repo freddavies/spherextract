@@ -1325,7 +1325,7 @@ def main(argv=None):
         # ------------------------------------------------------------------
         # Step 2: optimal extraction from each cutout
         # ------------------------------------------------------------------
-        print("    Extracting spectrophotometry...")
+        print("Extracting spectrophotometry...")
         for image in cutout_images:
             det = image['detector_id']
             result = optimal_extract(
@@ -1357,6 +1357,7 @@ def main(argv=None):
                             f"  n_outlier={result.n_pix_outlier}"
                             f"  converged={result.converged}"
                          )
+        print("Done.")
         # ------------------------------------------------------------------
         # Combined CSV + TXT (always written if there are any results)
         # ------------------------------------------------------------------
