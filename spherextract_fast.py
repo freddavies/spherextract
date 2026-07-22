@@ -432,6 +432,8 @@ def find_nearby_objects(ra, dec,
     """
     coord = SkyCoord(ra,dec,unit='deg',frame='icrs')
     if catalog == 'catwise':
+        if maglim is None:
+            maglim = 17.0 # reasonable default for W1
         print(f"    Querying CatWISE2020 for nearby objects brighter than W1={maglim+2.7} AB mag within {deblend_radius} arcsec")
         
         from astroquery.ipac.irsa import Irsa
@@ -440,8 +442,6 @@ def find_nearby_objects(ra, dec,
                                  radius=deblend_radius*u.arcsec)
                                  
         # Trim faint objects
-        if maglim is None:
-            maglim = 17.0 # reasonable default for W1
         keep = (np.ma.getdata(all_objs['w1mpro']) < maglim)
                                  
         # Remove target object if present
@@ -457,6 +457,8 @@ def find_nearby_objects(ra, dec,
         else:
             deblend_list = None
     elif catalog == 'gaia':
+        if maglim is None:
+            maglim = 19.7 # reasonable default for GRP
         print(f"    Querying Gaia for nearby objects brighter than G_RP={maglim} mag within {deblend_radius} arcsec")
         
         from astroquery.gaia import Gaia
@@ -465,8 +467,6 @@ def find_nearby_objects(ra, dec,
         r = j.get_results()
 
         # Trim faint objects
-        if maglim is None:
-            maglim = 19.7 # reasonable default for GRP
         keep = (np.ma.getdata(r['phot_rp_mean_mag']) < maglim)
                                  
         # Remove target object if present
