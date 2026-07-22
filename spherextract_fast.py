@@ -448,8 +448,8 @@ def find_nearby_objects(ra, dec,
         obj_coords = [SkyCoord(np.ma.getdata(all_objs['ra'])[ii], np.ma.getdata(all_objs['dec'])[ii],
                                unit='deg', frame='icrs') for ii in range(len(all_objs))]
         seps = np.array([coord.separation(obj_coords[ii]).arcsec for ii in range(len(all_objs))])
-        if np.min(dists) < 2.0:                # this minimum might be a bit too big, but closer than that
-            target = np.argmin(dists)          # and I wouldn't expect deblending to work well anyway, right?
+        if np.min(seps) < 2.0:                # this minimum might be a bit too big, but closer than that
+            target = np.argmin(seps)          # and I wouldn't expect deblending to work well anyway, right?
             keep = keep & (np.arange(len(all_objs)) != target)
             
         if np.sum(keep) > 0:
@@ -473,8 +473,8 @@ def find_nearby_objects(ra, dec,
         obj_coords = [SkyCoord(np.ma.getdata(r['ra'])[ii], np.ma.getdata(r['dec'])[ii],
                                unit='deg', frame='icrs') for ii in range(len(r))]
         seps = np.array([coord.separation(obj_coords[ii]).arcsec for ii in range(len(r))])
-        if np.min(dists) < 2.0:                # this minimum might be a bit too big, but closer than that
-            target = np.argmin(dists)          # and I wouldn't expect deblending to work well anyway, right?
+        if np.min(seps) < 2.0:                # this minimum might be a bit too big, but closer than that
+            target = np.argmin(seps)          # and I wouldn't expect deblending to work well anyway, right?
             keep = keep & (np.arange(len(r)) != target)
 
         if np.sum(keep) > 0:
