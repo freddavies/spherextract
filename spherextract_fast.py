@@ -633,10 +633,10 @@ def optimal_extract(image, psf_cube_fits, name, ra, dec, deblend_list = None,
     try:
         badflux = img[int(np.round(ycut)),int(np.round(xcut))] == 0
     except:
-        print("  [WARN] Target outside image footprint; skipping.")
+        dprint("  [WARN] Target outside image footprint; skipping.")
         return _nan_result(near_detector_edge=True)
     if xcut < 0 or xcut > det_w-1 or ycut < 0 or ycut > det_h-1 or badflux:
-        print("  [WARN] Target outside image footprint; skipping.")
+        dprint("  [WARN] Target outside image footprint; skipping.")
         return _nan_result(near_detector_edge=True)
         
     if deblend_list is not None:
@@ -1181,6 +1181,8 @@ def _build_parser():
                    help="Save diagnostic figures")
     p.add_argument("--results-dir", default="spherex_results",
                    help="Directory for result files (default: spherex_results/)")
+    p.add_argument("--quiet", action="store_true",
+                   help="Reduce output to terminal")
                    
     # Data file options
     p.add_argument("--image-tab-path", default="spherex_calibs",
@@ -1323,6 +1325,7 @@ def main(argv=None):
         # ------------------------------------------------------------------
         # Step 2: optimal extraction from each cutout
         # ------------------------------------------------------------------
+        print("    Extracting spectrophotometry...")
         for image in cutout_images:
             det = image['detector_id']
             result = optimal_extract(
@@ -1344,15 +1347,16 @@ def main(argv=None):
             )
             if result.wv_um is not None and result.wv_um is not np.nan:
                 all_results.append(result)
-                print(
-                        f"    λ={result.wv_um or 'N/A'} µm  "
-                        f"flux={result.opt_flux_MJysr or 'N/A'} MJy/sr"
-                        f"  ({result.opt_flux_uJy or 'N/A'} µJy)"
-                        f"  S/N={result.opt_snr or 'N/A'}"
-                        f"  n_used={result.n_pix_used}"
-                        f"  n_outlier={result.n_pix_outlier}"
-                        f"  converged={result.converged}"
-                     )
+                if not args.quiet:
+                    print(
+                            f"    λ={result.wv_um or 'N/A'} µm  "
+                            f"flux={result.opt_flux_MJysr or 'N/A'} MJy/sr"
+                            f"  ({result.opt_flux_uJy or 'N/A'} µJy)"
+                            f"  S/N={result.opt_snr or 'N/A'}"
+                            f"  n_used={result.n_pix_used}"
+                            f"  n_outlier={result.n_pix_outlier}"
+                            f"  converged={result.converged}"
+                         )
         # ------------------------------------------------------------------
         # Combined CSV + TXT (always written if there are any results)
         # ------------------------------------------------------------------
