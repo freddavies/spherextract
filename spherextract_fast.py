@@ -274,6 +274,7 @@ def cutout_pixels_to_images(pixels, image_tab, ra, dec, cutout_size, nodup=True)
     return images
     
 # Helper: WCS determination from constructed images
+# TODO: This unsurprisingly breaks at latitudes close-ish to 90 degrees. Is there a better way?
 def fit_affine_wcs(image,mask=None):
     """
     Fit a local affine (linear) WCS from pixel RA/Dec arrays.
@@ -284,7 +285,7 @@ def fit_affine_wcs(image,mask=None):
     col_flat = image['col'][mask].flatten() - image['col'][mask].min()
     row_flat = image['row'][mask].flatten() - image['row'][mask].min()
 
-    # Centre coordinates for numerical stability
+    # Center coordinates for numerical stability
     ra0  = ra_flat.mean()
     dec0 = dec_flat.mean()
     dra  = ra_flat  - ra0
@@ -321,7 +322,7 @@ def _make_psf_detgrid(psf_img, oversamp, cutout_shape, xcut, ycut):
     --------
     1. Crop the PSF to a square whose size is divisible by *oversamp*.
     2. Embed it in a high-res canvas whose size matches the cutout × oversamp.
-    3. Apply a subpixel shift (in high-res units) so the PSF centre lands at
+    3. Apply a subpixel shift (in high-res units) so the PSF center lands at
        (xcut, ycut) in the detector cutout frame.
     4. Block-sum (flux-conserving) to the detector grid.
 
@@ -348,7 +349,7 @@ def _make_psf_detgrid(psf_img, oversamp, cutout_shape, xcut, ycut):
     # 2. High-res canvas
     Hr, Wr = H * oversamp, W * oversamp
     canvas = np.zeros((Hr, Wr), dtype=hr.dtype)
-    # Centre of canvas in high-res pixels
+    # Center of canvas in high-res pixels
     cyc = Hr // 2
     cxc = Wr // 2
     y0c = cyc - m // 2
@@ -361,7 +362,7 @@ def _make_psf_detgrid(psf_img, oversamp, cutout_shape, xcut, ycut):
     canvas[max(0, y0c): min(Hr, y0c + m),
            max(0, x0c): min(Wr, x0c + m)] = hr[ys0:ye1, xs0:xe1]
 
-    # 3. Subpixel shift: move PSF centre from canvas centre to (xcut, ycut)
+    # 3. Subpixel shift: move PSF center from canvas center to (xcut, ycut)
     dX_det = xcut - (W - 1) / 2.0
     dY_det = ycut - (H - 1) / 2.0
     shifted = ndimage.shift(canvas, shift=(dY_det * oversamp, dX_det * oversamp),
@@ -896,7 +897,7 @@ def optimal_extract(image, psf_cube_fits, name, ra, dec, deblend_list = None,
     # ================================================================
     # 9. Chi² of the final model
     # ================================================================
-    model_final = f_hat * P if deblend_list is None else (f_hat*P.T).T
+    model_final = f_hat * P if deblend_list is None else np.sum((f_hat*P.T).T,axis=0)
     resid_final = data_safe - model_final
     w_final     = ivar * good.astype(float)
     chi2_val    = float(np.sum(resid_final ** 2 * w_final))
