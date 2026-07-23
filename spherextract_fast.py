@@ -269,14 +269,17 @@ def fit_affine_wcs(image, mask=None):
     Fit a local affine WCS using tangent-plane projection.
     Returns a callable that maps (ra, dec) -> (col_offset, row_offset).
     """
-    ra_flat  = image['ra'][mask].flatten()
-    dec_flat = image['dec'][mask].flatten()
+    ra_flat  = image['ra'][mask].flatten() * (np.pi / 180.0) # convert to radians
+    dec_flat = image['dec'][mask].flatten() * (np.pi / 180.0)
     col_flat = image['col'][mask].flatten() - image['col'][mask].min()
     row_flat = image['row'][mask].flatten() - image['row'][mask].min()
 
     # 1. Reference sky coordinates (field center)
-    ra0, dec0 = np.mean(ra_flat), np.mean(dec_flat)
-
+    sin_ra_mean = np.mean(np.sin(ra_flat))
+    cos_ra_mean = np.mean(np.cos(ra_flat))
+    ra0 = np.arctan2(sin_ra_mean, cos_ra_mean)
+    dec0 = np.mean(dec_flat)
+    
     # 2. Convert pixels to unit vectors on the celestial sphere
     cos_ra, sin_ra = np.cos(ra_flat), np.sin(ra_flat)
     cos_dec, sin_dec = np.cos(dec_flat), np.sin(dec_flat)
@@ -312,6 +315,8 @@ def fit_affine_wcs(image, mask=None):
     _Bx, _By, _Bz = Bx, By, Bz
 
     def evaluate(ra, dec):
+        ra *= np.pi / 180.0
+        dec *= np.pi / 180.0
         cos_ra_q, sin_ra_q = np.cos(ra), np.sin(ra)
         cos_dec_q, sin_dec_q = np.cos(dec), np.sin(dec)
         Vx_q = cos_ra_q*cos_dec_q
