@@ -203,12 +203,13 @@ def cutout_pixels_to_images(pixels, image_tab, ra, dec, cutout_size, nodup=True)
     
     # If RA ~ 0, then we might run into wrapping issues with the WCS
     # Rather than do something sophisticated, we pretend RA can go negative
-    wrap = (ra < cutout_size) | (ra > 360.0-cutout_size)
+    # NOTE: if Dec is very close to +/- 90 degrees, this will barf, but so will the WCS!
+    wrap = (ra < cutout_size/np.cos(dec)) | (ra > 360.0-cutout_size/np.cos(dec))
     if wrap: # we gotta wrap it up
         if ra < 180: # object is on the positive side
-            all_ra[all_ra>360-2*cutout_size] -= 360.0
+            all_ra[all_ra>360-2*cutout_size/np.cos(dec)] -= 360.0
         else: # object is on the "negative" side
-            all_ra[all_ra<2*cutout_size] += 360.0
+            all_ra[all_ra<2*cutout_size/np.cos(dec)] += 360.0
 
 
     images = []
