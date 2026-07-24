@@ -622,7 +622,7 @@ def optimal_extract(image, psf_cube_fits, name, ra, dec, deblend_list = None,
     cdelt    = hdr_psf["CDELT1"]   # arcsec per high-res px
     px_arcsec = cdelt * oversamp   # arcsec per detector px
 
-    omega_arcsec2 = 6.15*6.15 # hdr["HIERARCH OMEGA_MEDIAN"]
+    omega_arcsec2 = 6.15*6.15
     arcsec2_to_sr = (np.pi / (180.0 * 3600.0)) ** 2
     omega_sr = omega_arcsec2 * arcsec2_to_sr
 
@@ -633,10 +633,7 @@ def optimal_extract(image, psf_cube_fits, name, ra, dec, deblend_list = None,
     unused = wave == 0
     m = ~unused
     
-    if deblend_list is not None:
-        nblend = len(deblend_list)
-    else:
-        nblend = 0
+    nblend = len(deblend_list) if deblend_list is not None else 0
     
 #    # ================================================================
 #    # 2. Target pixel position
@@ -937,13 +934,12 @@ def optimal_extract(image, psf_cube_fits, name, ra, dec, deblend_list = None,
     # Integrated flux = f_hat × Ω_pix × Σ P_det
     # (Σ P_det ≈ 1 for a unit-normalised PSF)
     if deblend_list is not None:
+        # nuke the rest of the objects and just keep the target
         f_hat_err = float(np.sqrt(cov[0,0])) if np.isfinite(cov[0,0]) else np.nan
+        f_hat = f_hat[0]
+        psf_sum = psf_sum[0]
     else:
         f_hat_err = float(np.sqrt(var_f)) if np.isfinite(var_f) else np.nan
-
-    if deblend_list is not None:
-        f_hat = f_hat[0] # nuke the rest of the objects
-        psf_sum = psf_sum[0]
 
     if np.isfinite(omega_sr) and psf_sum > 0:
         flux_uJy     = f_hat * omega_sr * psf_sum * 1e12
