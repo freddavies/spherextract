@@ -200,17 +200,6 @@ def cutout_pixels_to_images(pixels, image_tab, ra, dec, cutout_size, nodup=True)
         2**22, all_hp[sort_idx], lonlat=True, nest=True
     )
     # all_ra / all_dec are now aligned with sort_idx order
-    
-    # If RA ~ 0, then we might run into wrapping issues with the WCS
-    # Rather than do something sophisticated, we pretend RA can go negative
-    # NOTE: if Dec is very close to +/- 90 degrees, this will barf, but so will the linear WCS!
-    wrap = (ra < cutout_size/np.cos(dec)) | (ra > 360.0-cutout_size/np.cos(dec))
-    if wrap: # we gotta wrap it up
-        if ra < 180: # object is on the positive side
-            all_ra[all_ra>360-2*cutout_size/np.cos(dec)] -= 360.0
-        else: # object is on the "negative" side
-            all_ra[all_ra<2*cutout_size/np.cos(dec)] += 360.0
-
 
     images = []
     n_imgs = len(unique_ids)
@@ -275,38 +264,73 @@ def cutout_pixels_to_images(pixels, image_tab, ra, dec, cutout_size, nodup=True)
     return images
     
 # Helper: WCS determination from constructed images
-# TODO: This unsurprisingly breaks at latitudes close-ish to 90 degrees. Is there a better way?
-def fit_affine_wcs(image,mask=None):
+def fit_affine_wcs(image, mask=None):
     """
-    Fit a local affine (linear) WCS from pixel RA/Dec arrays.
+    Fit a local affine WCS using tangent-plane projection.
     Returns a callable that maps (ra, dec) -> (col_offset, row_offset).
     """
-    ra_flat  = image['ra'][mask].flatten()
-    dec_flat = image['dec'][mask].flatten()
+    ra_flat  = image['ra'][mask].flatten() * (np.pi / 180.0) # convert to radians
+    dec_flat = image['dec'][mask].flatten() * (np.pi / 180.0)
     col_flat = image['col'][mask].flatten() - image['col'][mask].min()
     row_flat = image['row'][mask].flatten() - image['row'][mask].min()
 
-    # Center coordinates for numerical stability
-    ra0  = ra_flat.mean()
-    dec0 = dec_flat.mean()
-    dra  = ra_flat  - ra0
-    ddec = dec_flat - dec0
+    # 1. Reference sky coordinates (field center)
+    sin_ra_mean = np.mean(np.sin(ra_flat))
+    cos_ra_mean = np.mean(np.cos(ra_flat))
+    ra0 = np.arctan2(sin_ra_mean, cos_ra_mean)
+    dec0 = np.mean(dec_flat)
+    
+    # 2. Convert pixels to unit vectors on the celestial sphere
+    cos_ra, sin_ra = np.cos(ra_flat), np.sin(ra_flat)
+    cos_dec, sin_dec = np.cos(dec_flat), np.sin(dec_flat)
+    Vx, Vy, Vz = cos_ra*cos_dec, sin_ra*cos_dec, sin_dec
 
-    # Design matrix: [dRA, dDec, 1] — one row per pixel
-    A = np.column_stack([dra, ddec, np.ones(len(dra))])
+    # 3. Reference direction & local tangent plane basis (East, North)
+    cos_ra0, sin_ra0 = np.cos(ra0), np.sin(ra0)
+    cos_dec0, sin_dec0 = np.cos(dec0), np.sin(dec0)
+    
+    # Reference unit vector
+    Nx, Ny, Nz = cos_ra0*cos_dec0, sin_ra0*cos_dec0, sin_dec0
+    # East basis (points along increasing RA at constant Dec)
+    Ex, Ey, Ez = -sin_ra0, cos_ra0, 0.0
+    # North basis (points along increasing Dec at constant RA)
+    Bx, By, Bz = -cos_ra0*sin_dec0, -sin_ra0*sin_dec0, cos_dec0
 
-    # Solve for col and row simultaneously (lstsq handles both RHS columns)
-    coeffs, *_ = np.linalg.lstsq(A, np.column_stack([col_flat, row_flat]),
-                                  rcond=None)
-    # coeffs is (3, 2):  [[a, d],
-    #                      [b, e],
-    #                      [c, f]]
+    # 4. Gnomonic projection to tangent plane coordinates (xp, yp) in radians
+    c_dot = Vx*Nx + Vy*Ny + Vz*Nz  # cosine of angular distance from reference
+    
+    # Safeguard against division by zero (only triggers for FoV > ~90° or exact pole centering)
+    c_safe = np.where(np.abs(c_dot) < 1e-6, 1e-6 * np.sign(c_dot), c_dot)
+    
+    xp = (Vx*Ex + Vy*Ey + Vz*Ez) / c_safe
+    yp = (Vx*Bx + Vy*By + Vz*Bz) / c_safe
+
+    # 5. Linear fit in tangent plane: [xp, yp, 1] -> [col, row]
+    A = np.column_stack([xp, yp, np.ones_like(xp)])
+    coeffs, *_ = np.linalg.lstsq(A, np.column_stack([col_flat, row_flat]), rcond=None)
+
+    # Cache constants for closure to avoid recomputation during evaluation
+    _Nx, _Ny, _Nz = Nx, Ny, Nz
+    _Ex, _Ey, _Ez = Ex, Ey, Ez
+    _Bx, _By, _Bz = Bx, By, Bz
 
     def evaluate(ra, dec):
-        dra_q  = ra  - ra0
-        ddec_q = dec - dec0
-        col_offset = coeffs[0, 0] * dra_q + coeffs[1, 0] * ddec_q + coeffs[2, 0]
-        row_offset = coeffs[0, 1] * dra_q + coeffs[1, 1] * ddec_q + coeffs[2, 1]
+        ra *= np.pi / 180.0
+        dec *= np.pi / 180.0
+        cos_ra_q, sin_ra_q = np.cos(ra), np.sin(ra)
+        cos_dec_q, sin_dec_q = np.cos(dec), np.sin(dec)
+        Vx_q = cos_ra_q*cos_dec_q
+        Vy_q = sin_ra_q*cos_dec_q
+        Vz_q = sin_dec_q
+        
+        c_dot_q = Vx_q*_Nx + Vy_q*_Ny + Vz_q*_Nz
+        c_safe_q = np.where(np.abs(c_dot_q) < 1e-6, 1e-6 * np.sign(c_dot_q), c_dot_q)
+        
+        xp_q = (Vx_q*_Ex + Vy_q*_Ey + Vz_q*_Ez) / c_safe_q
+        yp_q = (Vx_q*_Bx + Vy_q*_By + Vz_q*_Bz) / c_safe_q
+        
+        col_offset = coeffs[0, 0]*xp_q + coeffs[1, 0]*yp_q + coeffs[2, 0]
+        row_offset = coeffs[0, 1]*xp_q + coeffs[1, 1]*yp_q + coeffs[2, 1]
         return col_offset, row_offset
 
     return evaluate
@@ -598,7 +622,7 @@ def optimal_extract(image, psf_cube_fits, name, ra, dec, deblend_list = None,
     cdelt    = hdr_psf["CDELT1"]   # arcsec per high-res px
     px_arcsec = cdelt * oversamp   # arcsec per detector px
 
-    omega_arcsec2 = 6.15*6.15 # hdr["HIERARCH OMEGA_MEDIAN"]
+    omega_arcsec2 = 6.15*6.15
     arcsec2_to_sr = (np.pi / (180.0 * 3600.0)) ** 2
     omega_sr = omega_arcsec2 * arcsec2_to_sr
 
@@ -609,10 +633,7 @@ def optimal_extract(image, psf_cube_fits, name, ra, dec, deblend_list = None,
     unused = wave == 0
     m = ~unused
     
-    if deblend_list is not None:
-        nblend = len(deblend_list)
-    else:
-        nblend = 0
+    nblend = len(deblend_list) if deblend_list is not None else 0
     
 #    # ================================================================
 #    # 2. Target pixel position
@@ -913,13 +934,12 @@ def optimal_extract(image, psf_cube_fits, name, ra, dec, deblend_list = None,
     # Integrated flux = f_hat × Ω_pix × Σ P_det
     # (Σ P_det ≈ 1 for a unit-normalised PSF)
     if deblend_list is not None:
+        # nuke the rest of the objects and just keep the target
         f_hat_err = float(np.sqrt(cov[0,0])) if np.isfinite(cov[0,0]) else np.nan
+        f_hat = f_hat[0]
+        psf_sum = psf_sum[0]
     else:
         f_hat_err = float(np.sqrt(var_f)) if np.isfinite(var_f) else np.nan
-
-    if deblend_list is not None:
-        f_hat = f_hat[0] # nuke the rest of the objects
-        psf_sum = psf_sum[0]
 
     if np.isfinite(omega_sr) and psf_sum > 0:
         flux_uJy     = f_hat * omega_sr * psf_sum * 1e12
