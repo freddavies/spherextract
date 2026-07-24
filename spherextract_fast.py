@@ -504,7 +504,7 @@ def find_nearby_objects(ra, dec,
             keep = keep & (np.arange(len(r)) != target)
 
         if np.sum(keep) > 0:
-            deblend_list = np.vstack([np.ma.getdata(r['ra'])[keep],rp.ma.getdata(r['dec'])[keep]]).T
+            deblend_list = np.vstack([np.ma.getdata(r['ra'])[keep],np.ma.getdata(r['dec'])[keep]]).T
         else:
             deblend_list = None
     else:
@@ -521,7 +521,8 @@ def find_nearby_objects(ra, dec,
 # Core: optimal extraction from a single image
 # ---------------------------------------------------------------------------
 
-def optimal_extract(image, psf_cube_fits, name, ra, dec, deblend_list = None,
+def optimal_extract(image, psf_cube_fits, name, ra, dec,
+                    deblend_list = None, sapm_fits = None,
                     fit_radius_px = 3.0, kappa = 4.0, max_iter = 10,
                     linear_bkg = False, debug = False, show_figs = False,
                     save_figs = False, results_dir = None, no_masking = False):
@@ -622,19 +623,21 @@ def optimal_extract(image, psf_cube_fits, name, ra, dec, deblend_list = None,
     cdelt    = hdr_psf["CDELT1"]   # arcsec per high-res px
     px_arcsec = cdelt * oversamp   # arcsec per detector px
 
-    omega_arcsec2 = 6.15*6.15
-    arcsec2_to_sr = (np.pi / (180.0 * 3600.0)) ** 2
-    omega_sr = omega_arcsec2 * arcsec2_to_sr
-
     obsid       = image['obsid']
     det_w        = img.shape[1]
     det_h        = img.shape[0]
     
-    unused = wave == 0
-    m = ~unused
+    unused = (wave == 0)
+    gpm = ~unused
+
+    omega_arcsec2 = 6.15*6.15*np.ones_like(img)
+    if sapm_fits is not None:
+        omega_arcsec2[gpm] = sapm_fits[1].data[image['row'].astype(int)[gpm],image['col'].astype(int)[gpm]]
+    arcsec2_to_sr = (np.pi / (180.0 * 3600.0)) ** 2
+    omega_sr = omega_arcsec2 * arcsec2_to_sr
     
     nblend = len(deblend_list) if deblend_list is not None else 0
-    
+
 #    # ================================================================
 #    # 2. Target pixel position
 #    #
@@ -650,7 +653,7 @@ def optimal_extract(image, psf_cube_fits, name, ra, dec, deblend_list = None,
 
 
 #    # (a) Cutout pixel coordinate
-    wcs = fit_affine_wcs(image,m)
+    wcs = fit_affine_wcs(image,gpm)
     xcut, ycut = wcs(ra, dec)
     # Now check whether the nearest pixel is actually on the detector
     try:
@@ -669,8 +672,8 @@ def optimal_extract(image, psf_cube_fits, name, ra, dec, deblend_list = None,
             xcut_deblend[ii], ycut_deblend[ii] = wcs(deblend_list[ii,0], deblend_list[ii,1])
 
 #    # (b) Full-detector pixel coordinate.
-    xpix_fulldet = xcut+image['col'][m].min()
-    ypix_fulldet = ycut+image['row'][m].min()
+    xpix_fulldet = xcut+image['col'][gpm].min()
+    ypix_fulldet = ycut+image['row'][gpm].min()
 
     dprint(f"  Target cutout pixel : x={xcut:.3f}, y={ycut:.3f}")
     dprint(f"  Target full-det pixel: x={xpix_fulldet:.3f}, y={ypix_fulldet:.3f}")
@@ -688,7 +691,7 @@ def optimal_extract(image, psf_cube_fits, name, ra, dec, deblend_list = None,
     # 4. Background subtraction
     # ================================================================
     mask_bkg = (flags.astype(np.uint32) & _BAD_BITS_BKG) != 0
-    good_bkg = (~mask_bkg) & np.isfinite(cut_img) & (~unused)
+    good_bkg = (~mask_bkg) & np.isfinite(cut_img) & gpm
     bkg_npix = int(np.sum(good_bkg))
 
     if bkg_npix >= 3:
@@ -802,7 +805,7 @@ def optimal_extract(image, psf_cube_fits, name, ra, dec, deblend_list = None,
     ivar = np.where((cut_var > 0) & np.isfinite(cut_var),1.0/cut_var,0.0)
 
     # Base good-pixel mask (will be updated per iteration)
-    base_good = radmask & (~flag_mask) & np.isfinite(data) & (ivar > 0) & ~unused
+    base_good = radmask & (~flag_mask) & np.isfinite(data) & (ivar > 0) & gpm
 
     if not np.any(base_good):
         # Auto-fallback: try without flag masking
@@ -941,9 +944,9 @@ def optimal_extract(image, psf_cube_fits, name, ra, dec, deblend_list = None,
     else:
         f_hat_err = float(np.sqrt(var_f)) if np.isfinite(var_f) else np.nan
 
-    if np.isfinite(omega_sr) and psf_sum > 0:
-        flux_uJy     = f_hat * omega_sr * psf_sum * 1e12
-        flux_uJy_err = f_hat_err * omega_sr * psf_sum * 1e12
+    if psf_sum > 0:
+        flux_uJy     = f_hat * omega_sr[int(ycut),int(xcut)] * psf_sum * 1e12
+        flux_uJy_err = f_hat_err * omega_sr[int(ycut),int(xcut)] * psf_sum * 1e12
     else:
         flux_uJy = flux_uJy_err = np.nan
 
@@ -958,7 +961,7 @@ def optimal_extract(image, psf_cube_fits, name, ra, dec, deblend_list = None,
     aper_radius_px = 2.0 # This should get most of the flux
     apermask = r2 <= aper_radius_px ** 2
     aper_flux = np.sum(data_safe[apermask])
-    aper_flux_uJy = aper_flux * omega_sr * 1e12
+    aper_flux_uJy = aper_flux * omega_sr[int(ycut),int(xcut)] * 1e12
     aper_flux_uJy_err = np.sqrt(np.sum(cut_var[apermask & (data_safe != 0)]))
 
     # ================================================================
@@ -1012,7 +1015,7 @@ def optimal_extract(image, psf_cube_fits, name, ra, dec, deblend_list = None,
         expid=int(image['imageid']),
         mjd_avg=float(mjd_avg_val),
         psf_index=int(idx_psf),
-        omega_sr=float(omega_sr),
+        omega_sr=float(omega_sr[int(ycut),int(xcut)]),
         px_scale_arcsec=float(px_arcsec),
         wv_um=float(wv_um),
         wv_width_um=float(wv_width_um),
@@ -1211,6 +1214,8 @@ def _build_parser():
                    help="Directory to look for the image.parquet talltable data file.")
     p.add_argument("--psf-path", default="spherex_calibs/psf",
                    help="Directory to look for oversampled PSF model cubes.")
+    p.add_argument("--sapm-path", default=None,
+                   help="Directory to look for solid angle maps. Not used by default.")
 
     return p
 
@@ -1280,6 +1285,12 @@ def main(argv=None):
     image_tab = pyarrow.parquet.read_table(os.path.join(args.image_tab_path,"image.parquet"))
     # Load in PSF model cubes
     psf_cubes = [fits.open(os.path.join(args.psf_path,f'average_psf_D{ii+1}_spx_cal-psf-v5-2026-082.fits')) for ii in range(6)]
+
+    # Load in solid angle maps
+    if args.sapm_path is not None:
+        sapm_images = [fits.open(os.path.join(args.sapm_path,r'solid_angle_pixel_map_D1_spx_cal-sapm-v2-2025-164.fits')) for ii in range(6)]
+    else:
+        sapm_images = None
 
     failed = []
 
@@ -1357,6 +1368,7 @@ def main(argv=None):
                 ra=ra,
                 dec=dec,
                 deblend_list=deblend_list,
+                sapm_fits=sapm_images[det-1] if sapm_images is not None else None,
                 fit_radius_px=args.fit_radius,
                 kappa=args.kappa,
                 max_iter=args.max_iter,
