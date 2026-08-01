@@ -716,7 +716,7 @@ def optimal_extract(image, psf_cube_fits, name, ra, dec,
             bkg = result[1] + result[0]*(image['row']-np.median(image['row']))
             
             # Now do one round of clipping on the background pixels for robustness
-            outlier_bkg = np.abs((bkg-cut_img)/np.sqrt(cut_var)) > 5.0
+            outlier_bkg = (np.abs((bkg-cut_img)/np.sqrt(cut_var+(cut_var==0))) > 5.0)
             good_bkg2 = good_bkg & ~outlier_bkg
             # And repeat the background estimate
             bkg_rows = image['row'][good_bkg2]-np.median(image['row'])
@@ -802,7 +802,7 @@ def optimal_extract(image, psf_cube_fits, name, ra, dec,
     else:
         flag_mask = (cut_flags.astype(np.uint32) & _BAD_BITS) != 0
 
-    ivar = np.where((cut_var > 0) & np.isfinite(cut_var),1.0/cut_var,0.0)
+    ivar = np.where((cut_var > 0) & np.isfinite(cut_var),1.0/(cut_var+(cut_var==0)),0.0)
 
     # Base good-pixel mask (will be updated per iteration)
     base_good = radmask & (~flag_mask) & np.isfinite(data) & (ivar > 0) & gpm
