@@ -973,7 +973,7 @@ def optimal_extract(image, psf_cube_fits, name, ra, dec,
     apermask = r2 <= aper_radius_px ** 2
     aper_flux = np.sum(data_safe[apermask])
     aper_flux_uJy = aper_flux * omega_sr[int(ycut),int(xcut)] * 1e12
-    aper_flux_uJy_err = np.sqrt(np.sum(cut_var[apermask & (data_safe != 0)]))
+    aper_flux_uJy_err = np.sqrt(np.sum(var[apermask & (data_safe != 0)]))
 
     # ================================================================
     # 10. Spectral WCS at target position
