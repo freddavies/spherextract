@@ -493,6 +493,8 @@ def find_nearby_objects(ra, dec,
         
         j = Gaia.cone_search_async(coord, radius=u.Quantity(deblend_radius, u.arcsec))
         r = j.get_results()
+        
+        embed()
 
         # Trim faint objects
         keep = (np.ma.getdata(r['phot_rp_mean_mag']) < maglim)
@@ -507,8 +509,8 @@ def find_nearby_objects(ra, dec,
 
         if np.sum(keep) > 0:
             deblend_list = np.vstack([np.ma.getdata(r['ra'])[keep],np.ma.getdata(r['dec'])[keep],
-                                      np.ma.getdata(r['pm_ra'])[keep],
-                                      np.ma.getdata(r['pm_dec'])[keep],
+                                      np.ma.getdata(r['pmra'])[keep],
+                                      np.ma.getdata(r['pmdec'])[keep],
                                       ref_epoch*np.ones(np.sum(keep))]).T
         else:
             deblend_list = None
@@ -663,8 +665,8 @@ def optimal_extract(image, psf_cube_fits, name, ra, dec,
 #    #
 #    # ================================================================
 
-
 #    # (a) Cutout pixel coordinate
+    # First we reconstruct th
     wcs = fit_affine_wcs(image,gpm)
     xcut, ycut = wcs(ra, dec)
     # Now check whether the nearest pixel is actually on the detector
@@ -1138,8 +1140,8 @@ def _read_input_file(filename):
                 ("name", ["name", "object", "source", "id", "target"]),
                 ("ra",   ["ra", "right_ascension", "alpha"]),
                 ("dec",  ["dec", "declination", "delta"]),
-                ("pm_ra", ["pm_ra", "pm_RA"]),
-                ("pm_dec", ["pm_dec", "pm_Dec", "pm_DEC"])
+                ("pm_ra", ["pm_ra", "pmra"]),
+                ("pm_dec", ["pm_dec", "pmdec"])
             ]:
                 for alt in alternatives:
                     if alt in cols_lower:
