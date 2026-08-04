@@ -1190,7 +1190,7 @@ def _build_parser():
     p.add_argument("--pm-dec", type=float, default=None,
                    help="Proper motion in the Dec direction (mas/yr)")
     p.add_argument("--ref-epoch", type=float, default=57388.0,
-                   help="Reference epoch for proper motion (MJD)")
+                   help="Reference epoch for proper motion (MJD; default=57388.0 [2016.0] used by Gaia DR3)")
     p.add_argument("--input-pm", action="store_true",
                    help="Read proper motions from input table")
                    
