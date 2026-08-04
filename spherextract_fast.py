@@ -489,9 +489,11 @@ def find_nearby_objects(ra, dec,
         
         from astroquery.gaia import Gaia
         
+        ref_epoch = 57388.0 # 2016.0, Gaia DR3
+        
         j = Gaia.cone_search_async(coord, radius=u.Quantity(deblend_radius, u.arcsec))
         r = j.get_results()
-
+        
         # Trim faint objects
         keep = (np.ma.getdata(r['phot_rp_mean_mag']) < maglim)
                                  
@@ -504,7 +506,10 @@ def find_nearby_objects(ra, dec,
             keep = keep & (np.arange(len(r)) != target)
 
         if np.sum(keep) > 0:
-            deblend_list = np.vstack([np.ma.getdata(r['ra'])[keep],np.ma.getdata(r['dec'])[keep]]).T
+            deblend_list = np.vstack([np.ma.getdata(r['ra'])[keep],np.ma.getdata(r['dec'])[keep],
+                                      np.ma.getdata(r['pmra'])[keep],
+                                      np.ma.getdata(r['pmdec'])[keep],
+                                      ref_epoch*np.ones(np.sum(keep))]).T
         else:
             deblend_list = None
     else:
@@ -522,6 +527,7 @@ def find_nearby_objects(ra, dec,
 # ---------------------------------------------------------------------------
 
 def optimal_extract(image, psf_cube_fits, name, ra, dec,
+                    pm_ra=None, pm_dec=None, ref_epoch=None,
                     deblend_list = None, sapm_fits = None,
                     fit_radius_px = 3.0, kappa = 4.0, max_iter = 10,
                     linear_bkg = False, debug = False, show_figs = False,
@@ -614,6 +620,12 @@ def optimal_extract(image, psf_cube_fits, name, ra, dec,
     
     mjd_avg_val = image['mjd_avg']
     
+    # Correct RA/Dec to MJD of current image
+    pm_conv = (1e-3/3600/31557600)*86400 # convert from mas/yr to deg/day
+    if pm_ra is not None:
+        ra += (pm_conv*pm_ra/np.cos(dec*np.pi/180.0))*(mjd_avg_val-ref_epoch)
+        dec += pm_conv*pm_dec*(mjd_avg_val-ref_epoch)
+    
     # Load PSF cube
     hdul       = psf_cube_fits
     psf_cube   = hdul[1].data
@@ -651,8 +663,8 @@ def optimal_extract(image, psf_cube_fits, name, ra, dec,
 #    #
 #    # ================================================================
 
-
 #    # (a) Cutout pixel coordinate
+    # First we reconstruct th
     wcs = fit_affine_wcs(image,gpm)
     xcut, ycut = wcs(ra, dec)
     # Now check whether the nearest pixel is actually on the detector
@@ -669,7 +681,12 @@ def optimal_extract(image, psf_cube_fits, name, ra, dec,
         xcut_deblend = np.zeros(nblend)
         ycut_deblend = np.zeros(nblend)
         for ii in range(nblend):
-            xcut_deblend[ii], ycut_deblend[ii] = wcs(deblend_list[ii,0], deblend_list[ii,1])
+            rad, decd = deblend_list[ii,0], deblend_list[ii,1]
+            if deblend_list.shape[1] > 2:
+                pm_rad, pm_decd, ref_epochd = deblend_list[ii,2], deblend_list[ii,3], deblend_list[ii,4]
+                rad += (pm_conv*pm_rad/np.cos(decd*np.pi/180.0))*(mjd_avg_val-ref_epochd)
+                decd += pm_conv*pm_decd*(mjd_avg_val-ref_epochd)
+            xcut_deblend[ii], ycut_deblend[ii] = wcs(rad, decd)
 
 #    # (b) Full-detector pixel coordinate.
     xpix_fulldet = xcut+image['col'][gpm].min()
@@ -678,28 +695,22 @@ def optimal_extract(image, psf_cube_fits, name, ra, dec,
     dprint(f"  Target cutout pixel : x={xcut:.3f}, y={ycut:.3f}")
     dprint(f"  Target full-det pixel: x={xpix_fulldet:.3f}, y={ypix_fulldet:.3f}")
 
-    # ================================================================
-    # 3. Cutout (this is a bit redundant, will clean up later)
-    # ================================================================
-    cut_img = np.copy(img)
-    cut_flags = np.copy(flags)
-    cut_var = np.copy(var)
-    H,W = cut_img.shape
+    H,W = img.shape
     dprint(f"  Cutout shape: {H}×{W}, target at xcut={xcut:.3f}, ycut={ycut:.3f}")
     
     # ================================================================
-    # 4. Background subtraction
+    # 3. Background subtraction
     # ================================================================
     mask_bkg = (flags.astype(np.uint32) & _BAD_BITS_BKG) != 0
-    good_bkg = (~mask_bkg) & np.isfinite(cut_img) & gpm
+    good_bkg = (~mask_bkg) & np.isfinite(img) & gpm
     bkg_npix = int(np.sum(good_bkg))
 
     if bkg_npix >= 3:
-        bkg = float(np.median(cut_img[good_bkg]))
+        bkg = float(np.median(img[good_bkg]))
     else:
         # fallback: ignore flags, use any finite pixel
-        good_any = np.isfinite(cut_img)
-        bkg = float(np.median(cut_img[good_any])) if np.any(good_any) else 0.0
+        good_any = np.isfinite(img)
+        bkg = float(np.median(img[good_any])) if np.any(good_any) else 0.0
         bkg_npix = int(np.sum(good_any))
         dprint("  [WARN] Few good BCG pixels; using unmasked background estimate.")
         
@@ -707,8 +718,8 @@ def optimal_extract(image, psf_cube_fits, name, ra, dec,
     # Basic weighted linear least squares for efficiency
     if linear_bkg and np.sum(good_bkg) >= 10:
         bkg_rows = image['row'][good_bkg]-np.median(image['row'])
-        bkg_flux = cut_img[good_bkg]
-        bkg_wgts = 1.0/cut_var[good_bkg]
+        bkg_flux = img[good_bkg]
+        bkg_wgts = 1.0/var[good_bkg]
         X = np.column_stack([bkg_rows, np.ones_like(bkg_rows)])
         WX = X * bkg_wgts[:, None]
         try:
@@ -716,12 +727,12 @@ def optimal_extract(image, psf_cube_fits, name, ra, dec,
             bkg = result[1] + result[0]*(image['row']-np.median(image['row']))
             
             # Now do one round of clipping on the background pixels for robustness
-            outlier_bkg = (np.abs((bkg-cut_img)/np.sqrt(cut_var+(cut_var==0))) > 5.0)
+            outlier_bkg = (np.abs((bkg-img)/np.sqrt(var+(var==0))) > 5.0)
             good_bkg2 = good_bkg & ~outlier_bkg
             # And repeat the background estimate
             bkg_rows = image['row'][good_bkg2]-np.median(image['row'])
-            bkg_flux = cut_img[good_bkg2]
-            bkg_wgts = 1.0/cut_var[good_bkg2]
+            bkg_flux = img[good_bkg2]
+            bkg_wgts = 1.0/var[good_bkg2]
             X = np.column_stack([bkg_rows, np.ones_like(bkg_rows)])
             WX = X * bkg_wgts[:, None]
             result = np.linalg.solve(WX.T @ X, WX.T @ bkg_flux)
@@ -730,13 +741,13 @@ def optimal_extract(image, psf_cube_fits, name, ra, dec,
             dprint("Linear background fit failed; falling back to median")
         if np.sum(~np.isfinite(bkg)) > 0:
             dprint("Linear background fit failed; falling back to median")
-            bkg = float(np.median(cut_img[good_bkg]))
+            bkg = float(np.median(img[good_bkg]))
             
-    data = cut_img - bkg
+    data = img - bkg
     dprint(f"  Background: {np.mean(bkg):.4g} MJy/sr (from {bkg_npix} pixels)")
 
     # ================================================================
-    # 5. Select PSF zone
+    # 4. Select PSF zone
     # ================================================================
     xctr_items = sorted(
         [(int(k.split("_")[1]), hdr_psf[k])
@@ -760,7 +771,7 @@ def optimal_extract(image, psf_cube_fits, name, ra, dec,
     dprint(f"  PSF zone index: {idx_psf}/{psf_cube.shape[0]-1}")
 
     # ================================================================
-    # 6. Build detector-grid PSF (block-sum from oversampled model)
+    # 5. Build detector-grid PSF (block-sum from oversampled model)
     # ================================================================
     P = _make_psf_detgrid(psf_hr, oversamp, (H, W), xcut, ycut)
     if deblend_list is not None:
@@ -775,7 +786,7 @@ def optimal_extract(image, psf_cube_fits, name, ra, dec,
         dprint(f"  PSF detector-grid sum: {psf_sum:.6g} (≈1 if unit-normalised)")
 
     # ================================================================
-    # 7. Build pixel masks and weights
+    # 6. Build pixel masks and weights
     # ================================================================
     YY, XX = np.indices((H, W))
     r2 = (XX - xcut) ** 2 + (YY - ycut) ** 2
@@ -800,9 +811,9 @@ def optimal_extract(image, psf_cube_fits, name, ra, dec,
         flag_mask = np.zeros((H, W), dtype=bool)
         dprint("  [INFO] --no-masking: flag-based masking disabled in fit.")
     else:
-        flag_mask = (cut_flags.astype(np.uint32) & _BAD_BITS) != 0
+        flag_mask = (flags.astype(np.uint32) & _BAD_BITS) != 0
 
-    ivar = np.where((cut_var > 0) & np.isfinite(cut_var),1.0/(cut_var+(cut_var==0)),0.0)
+    ivar = np.where((var > 0) & np.isfinite(var),1.0/(var+(var==0)),0.0)
 
     # Base good-pixel mask (will be updated per iteration)
     base_good = radmask & (~flag_mask) & np.isfinite(data) & (ivar > 0) & gpm
@@ -820,7 +831,7 @@ def optimal_extract(image, psf_cube_fits, name, ra, dec,
     data_safe = np.where(np.isfinite(data), data, 0.0)
 
     # ================================================================
-    # 8. Iterative optimal extraction with outlier rejection
+    # 7. Iterative optimal extraction with outlier rejection
     # ================================================================
     #
     # Algorithm (Horne 1986 §3, adapted to 2D):
@@ -898,7 +909,7 @@ def optimal_extract(image, psf_cube_fits, name, ra, dec,
         # --- Step B: residual-based outlier detection ---
         model_px = f_hat * P if deblend_list is None else np.sum((f_hat*P.T).T,axis=0)
         resid     = data_safe - model_px          # (H, W)
-        sigma_px  = np.sqrt(np.where(cut_var > 0, cut_var, np.inf))
+        sigma_px  = np.sqrt(np.where(var > 0, var, np.inf))
         newly_bad = (np.abs(resid) > kappa * sigma_px) & radmask & good
 
         if not np.any(newly_bad):
@@ -920,7 +931,7 @@ def optimal_extract(image, psf_cube_fits, name, ra, dec,
     n_used    = int(np.sum(good))
 
     # ================================================================
-    # 9. Chi² of the final model
+    # 8. Chi² of the final model
     # ================================================================
     model_final = f_hat * P if deblend_list is None else np.sum((f_hat*P.T).T,axis=0)
     resid_final = data_safe - model_final
@@ -931,7 +942,7 @@ def optimal_extract(image, psf_cube_fits, name, ra, dec,
     dprint(f"  chi²={chi2_val:.3f}, dof={dof_val}, chi²/dof={chi2_val/dof_val:.3f}")
 
     # ================================================================
-    # 10. Convert amplitude to integrated flux [µJy]
+    # 9. Convert amplitude to integrated flux [µJy]
     # ================================================================
     # f_hat is the surface-brightness amplitude [MJy/sr].
     # Integrated flux = f_hat × Ω_pix × Σ P_det
@@ -962,10 +973,10 @@ def optimal_extract(image, psf_cube_fits, name, ra, dec,
     apermask = r2 <= aper_radius_px ** 2
     aper_flux = np.sum(data_safe[apermask])
     aper_flux_uJy = aper_flux * omega_sr[int(ycut),int(xcut)] * 1e12
-    aper_flux_uJy_err = np.sqrt(np.sum(cut_var[apermask & (data_safe != 0)]))
+    aper_flux_uJy_err = np.sqrt(np.sum(var[apermask & (data_safe != 0)]))
 
     # ================================================================
-    # 11. Spectral WCS at target position
+    # 10. Spectral WCS at target position
     # ================================================================
     
     # Use xcut/ycut and bilinearly interpolate from nearby pixels
@@ -985,7 +996,7 @@ def optimal_extract(image, psf_cube_fits, name, ra, dec,
     dprint(f"  Spectral WCS: λ={wv_um:.5f} µm, Δλ={wv_width_um:.5f} µm")
 
     # ================================================================
-    # 12. Optional diagnostic figure
+    # 11. Optional diagnostic figure
     # ================================================================
     if show_figs or save_figs:
         _plot_extraction(
@@ -1127,6 +1138,8 @@ def _read_input_file(filename):
                 ("name", ["name", "object", "source", "id", "target"]),
                 ("ra",   ["ra", "right_ascension", "alpha"]),
                 ("dec",  ["dec", "declination", "delta"]),
+                ("pm_ra", ["pm_ra", "pmra"]),
+                ("pm_dec", ["pm_dec", "pmdec"])
             ]:
                 for alt in alternatives:
                     if alt in cols_lower:
@@ -1135,7 +1148,10 @@ def _read_input_file(filename):
                             data.rename_column(actual, canon)
                         break
             if all(c in data.colnames for c in ("name", "ra", "dec")):
-                return data
+                if "pm_ra" in data.colnames:
+                    return data, True
+                else:
+                    return data, False
         except Exception:
             continue
     raise ValueError(
@@ -1168,7 +1184,16 @@ def _build_parser():
                    help="Target Dec in decimal degrees (required with --ra)")
     p.add_argument("--name", type=str, default="target",
                    help="Source name label (used with --ra/--dec)")
-
+    # proper motion
+    p.add_argument("--pm-ra", type=float, default=None,
+                   help="Proper motion in the RA direction (mas/yr)")
+    p.add_argument("--pm-dec", type=float, default=None,
+                   help="Proper motion in the Dec direction (mas/yr)")
+    p.add_argument("--ref-epoch", type=float, default=57388.0,
+                   help="Reference epoch for proper motion (MJD; default=57388.0 [2016.0] used by Gaia DR3)")
+    p.add_argument("--input-pm", action="store_true",
+                   help="Read proper motions from input table")
+                   
     # Download options
     p.add_argument("--cutout-size", type=float, default=0.05, metavar="DEG",
                    help="Cutout size in degrees (default: 0.01 = 36 arcsec)")
@@ -1273,14 +1298,22 @@ def main(argv=None):
 
     # Build target list
     if args.input:
-        table = _read_input_file(args.input)
-        targets = [
-            (str(row["name"]).strip(), float(row["ra"]), float(row["dec"]))
-            for row in table
-        ]
+        table,has_pm = _read_input_file(args.input)
+        if has_pm:
+            targets = [
+                (str(row["name"]).strip(), float(row["ra"]), float(row["dec"]),
+                 float(row["pm_ra"]), float(row["pm_dec"]), args.ref_epoch)
+                for row in table
+            ]
+        else:
+            targets = [
+                (str(row["name"]).strip(), float(row["ra"]), float(row["dec"]),
+                 0.0, 0.0, args.ref_epoch)
+                for row in table
+            ]
     else:
-        targets = [(args.name, args.ra, args.dec)]
-        
+        targets = [(args.name, args.ra, args.dec, args.pm_ra, args.pm_dec, args.ref_epoch)]
+
     # Load in table of all SPHEREx image metadata
     image_tab = pyarrow.parquet.read_table(os.path.join(args.image_tab_path,"image.parquet"))
     # Load in PSF model cubes
@@ -1294,7 +1327,7 @@ def main(argv=None):
 
     failed = []
 
-    for name, ra, dec in targets:
+    for name, ra, dec, pm_ra, pm_dec, ref_epoch in targets:
         all_results: List[ExtractionResult] = []
         os.makedirs(args.results_dir, exist_ok=True)
     
@@ -1367,6 +1400,9 @@ def main(argv=None):
                 name=name,
                 ra=ra,
                 dec=dec,
+                pm_ra=pm_ra,
+                pm_dec=pm_dec,
+                ref_epoch=ref_epoch,
                 deblend_list=deblend_list,
                 sapm_fits=sapm_images[det-1] if sapm_images is not None else None,
                 fit_radius_px=args.fit_radius,
