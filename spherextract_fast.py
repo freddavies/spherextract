@@ -494,8 +494,6 @@ def find_nearby_objects(ra, dec,
         j = Gaia.cone_search_async(coord, radius=u.Quantity(deblend_radius, u.arcsec))
         r = j.get_results()
         
-        embed()
-
         # Trim faint objects
         keep = (np.ma.getdata(r['phot_rp_mean_mag']) < maglim)
                                  
@@ -686,8 +684,8 @@ def optimal_extract(image, psf_cube_fits, name, ra, dec,
             rad, decd = deblend_list[ii,0], deblend_list[ii,1]
             if deblend_list.shape[1] > 2:
                 pm_rad, pm_decd, ref_epochd = deblend_list[ii,2], deblend_list[ii,3], deblend_list[ii,4]
-                rad += (pm_conv*pm_decd/np.cos(decd*np.pi/180.0))*(mjd_avg_val-ref_epochd)
-                decd += pm_conv*pm_rad*(mjd_avg_val-ref_epochd)
+                rad += (pm_conv*pm_rad/np.cos(decd*np.pi/180.0))*(mjd_avg_val-ref_epochd)
+                decd += pm_conv*pm_decd*(mjd_avg_val-ref_epochd)
             xcut_deblend[ii], ycut_deblend[ii] = wcs(rad, decd)
 
 #    # (b) Full-detector pixel coordinate.
