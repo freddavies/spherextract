@@ -391,7 +391,7 @@ def _make_psf_detgrid(psf_img, oversamp, cutout_shape, xcut, ycut):
     dX_det = xcut - (W - 1) / 2.0
     dY_det = ycut - (H - 1) / 2.0
     shifted = ndimage.shift(canvas, shift=(dY_det * oversamp, dX_det * oversamp),
-                            order=3, mode="constant", prefilter=True)
+                            order=1, mode="constant", prefilter=True)
 
     # 4. Flux-conserving block-sum onto detector pixels
     det = shifted.reshape(H, oversamp, W, oversamp).sum(axis=(1, 3))
