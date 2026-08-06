@@ -339,7 +339,7 @@ def fit_affine_wcs(image, mask=None):
 # Helpers: PSF downsampling
 # ---------------------------------------------------------------------------
 
-def _make_psf_detgrid(psf_img, oversamp, cutout_shape, xcut, ycut):
+def _make_psf_detgrid(psf_img, oversamp, psf_size, cutout_shape, xcut, ycut):
     """
     Place the high-resolution PSF model on the detector pixel grid.
 
@@ -363,6 +363,10 @@ def _make_psf_detgrid(psf_img, oversamp, cutout_shape, xcut, ycut):
     det : (H, W) PSF evaluated on the detector grid
     """
     H, W = cutout_shape
+    
+    # 0. Crop the model PSF for efficiency
+    crop = int(oversamp*(10.0-psf_size))//2
+    psf_img = psf_img[crop:-crop,crop:-crop]
 
     # 1. Square crop divisible by oversamp
     cy_hr = psf_img.shape[0] // 2
@@ -530,6 +534,7 @@ def optimal_extract(image, psf_cube_fits, name, ra, dec,
                     pm_ra=None, pm_dec=None, ref_epoch=None,
                     deblend_list = None, sapm_fits = None,
                     fit_radius_px = 3.0, kappa = 4.0, max_iter = 10,
+                    psf_size = 10.0,
                     linear_bkg = False, debug = False, show_figs = False,
                     save_figs = False, results_dir = None, no_masking = False):
     """
@@ -773,7 +778,7 @@ def optimal_extract(image, psf_cube_fits, name, ra, dec,
     # ================================================================
     # 5. Build detector-grid PSF (block-sum from oversampled model)
     # ================================================================
-    P = _make_psf_detgrid(psf_hr, oversamp, (H, W), xcut, ycut)
+    P = _make_psf_detgrid(psf_hr, oversamp, psf_size, (H, W), xcut, ycut)
     if deblend_list is not None:
         P = [P]
         for ii in range(nblend):
@@ -834,7 +839,7 @@ def optimal_extract(image, psf_cube_fits, name, ra, dec,
     # 7. Iterative optimal extraction with outlier rejection
     # ================================================================
     #
-    # Algorithm (Horne 1986 §3, adapted to 2D):
+    # Algorithm (Horne 1986 §3, adapted to 2D a la Naylor 1998):
     #
     #   Step A: Estimate flux using current good-pixel mask
     #       f_hat = Σ_i [P_i ivar_i D_i] / Σ_i [P_i² ivar_i]
@@ -1210,6 +1215,8 @@ def _build_parser():
                    help="Outlier rejection threshold in σ (default: 4.0)")
     p.add_argument("--max-iter", type=int, default=10,
                    help="Maximum outlier-rejection iterations (default: 10)")
+    p.add_argument("--psf-size", type=float, default=10.0,
+                   help="Size of PSF model to use in the fit, in SPHEREx pixels. Native size is 10, can reduce to 7 or 8 for efficiency.")
     p.add_argument("--no-masking", action="store_true",
                    help="Ignore flag-based pixel masking in the fit")
     p.add_argument("--linear-bkg", action="store_true",
@@ -1408,6 +1415,7 @@ def main(argv=None):
                 fit_radius_px=args.fit_radius,
                 kappa=args.kappa,
                 max_iter=args.max_iter,
+                psf_size=args.psf_size,
                 linear_bkg=args.linear_bkg,
                 debug=args.debug,
                 show_figs=args.show_figs,
