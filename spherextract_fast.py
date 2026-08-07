@@ -752,6 +752,10 @@ def optimal_extract(image, psf_cube, psf_hdr, name, ra, dec,
     # ================================================================
     # 5. Build detector-grid PSF (block-sum from oversampled model)
     # ================================================================
+    
+    # TODO: Reduce size of cutout to fitted area before making PSF model.
+    # Currently this PSF construction takes ~90% of the computation time!
+    
     P = _make_psf_detgrid(psf_hr, oversamp, (H, W), xcut, ycut)
     if deblend_list is not None:
         P = [P]
@@ -1006,7 +1010,7 @@ def optimal_extract(image, psf_cube, psf_hdr, name, ra, dec,
         mjd_avg=float(mjd_avg_val),
         psf_index=int(idx_psf),
         omega_sr=float(omega_sr[int(ycut),int(xcut)]),
-        px_scale_arcsec=float(px_arcsec),
+        px_scale_arcsec=6.15,
         wv_um=float(wv_um),
         wv_width_um=float(wv_width_um),
         near_detector_edge=False,
