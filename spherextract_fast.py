@@ -526,11 +526,10 @@ def find_nearby_objects(ra, dec,
 # Core: optimal extraction from a single image
 # ---------------------------------------------------------------------------
 
-def optimal_extract(image, psf_cube_fits, name, ra, dec,
+def optimal_extract(image, psf_cube, psf_hdr, name, ra, dec,
                     pm_ra=None, pm_dec=None, ref_epoch=None,
                     deblend_list = None, sapm_fits = None,
                     fit_radius_px = 3.0, kappa = 4.0, max_iter = 10,
-                    psf_crop = 3,
                     linear_bkg = False, debug = False, show_figs = False,
                     save_figs = False, results_dir = None, no_masking = False):
     """
@@ -609,11 +608,11 @@ def optimal_extract(image, psf_cube_fits, name, ra, dec,
     # 1. Extract information from cutout image
     # ================================================================
 
-    img        = image['flux']
-    flags      = image['flags']
-    var        = image['var']
-    wave       = image['wave']
-    dwave      = image['dwave']
+    img         = image['flux']
+    flags       = image['flags']
+    var         = image['var']
+    wave        = image['wave']
+    dwave       = image['dwave']
     
     detector_id = image['detector_id']
     det_id_int  = int(detector_id)
@@ -626,19 +625,14 @@ def optimal_extract(image, psf_cube_fits, name, ra, dec,
     if pm_ra is not None:
         ra += (pm_conv*pm_ra/np.cos(dec*np.pi/180.0))*(mjd_avg_val-ref_epoch)
         dec += pm_conv*pm_dec*(mjd_avg_val-ref_epoch)
-    
-    # Load PSF cube
-    hdul       = psf_cube_fits
-    psf_cube   = hdul[1].data
-    hdr_psf    = hdul[1].header
 
-    oversamp = hdr_psf["OVERSAMP"]
-    cdelt    = hdr_psf["CDELT1"]   # arcsec per high-res px
-    px_arcsec = cdelt * oversamp   # arcsec per detector px
+    oversamp    = psf_hdr['oversamp']
+    xctrs       = psf_hdr['xctrs']
+    yctrs       = psf_hdr['yctrs']
 
     obsid       = image['obsid']
-    det_w        = img.shape[1]
-    det_h        = img.shape[0]
+    det_w       = img.shape[1]
+    det_h       = img.shape[0]
     
     unused = (wave == 0)
     gpm = ~unused
@@ -750,24 +744,8 @@ def optimal_extract(image, psf_cube_fits, name, ra, dec,
     # ================================================================
     # 4. Select PSF zone
     # ================================================================
-    xctr_items = sorted(
-        [(int(k.split("_")[1]), hdr_psf[k])
-         for k in hdr_psf if k.startswith("XCTR_")]
-    )
-    yctr_items = sorted(
-        [(int(k.split("_")[1]), hdr_psf[k])
-         for k in hdr_psf if k.startswith("YCTR_")]
-    )
-    nzone = min(len(xctr_items), len(yctr_items))
-    if nzone == 0:
-        # No zone info: just use the single PSF
-        idx_psf = 0
-    else:
-        xctrs = np.array([v for _, v in xctr_items[:nzone]])
-        yctrs = np.array([v for _, v in yctr_items[:nzone]])
-        dists = np.hypot(xctrs - xpix_fulldet, yctrs - ypix_fulldet)
-        idx_psf = int(np.argmin(dists))
-
+    dists = np.hypot(xctrs - xpix_fulldet, yctrs - ypix_fulldet)
+    idx_psf = int(np.argmin(dists))
     psf_hr = psf_cube[idx_psf]
     dprint(f"  PSF zone index: {idx_psf}/{psf_cube.shape[0]-1}")
 
@@ -1317,8 +1295,28 @@ def main(argv=None):
 
     # Load in table of all SPHEREx image metadata
     image_tab = pyarrow.parquet.read_table(os.path.join(args.image_tab_path,"image.parquet"))
-    # Load in PSF model cubes
-    psf_cubes = [fits.open(os.path.join(args.psf_path,f'average_psf_D{ii+1}_spx_cal-psf-v5-2026-082.fits')) for ii in range(6)]
+    
+    # Load in PSF model cubes and prepare zones
+    psf_cubes = [None for ii in range(6)]
+    psf_hdrs = [dict({'oversamp':None,'xctrs':[],'yctrs':[]}) for ii in range(6)]
+    for ii in range(len(psf_cubes)):
+        psf_fits = fits.open(os.path.join(args.psf_path,f'average_psf_D{ii+1}_spx_cal-psf-v5-2026-082.fits'))
+        psf_cubes[ii] = psf_fits[1].data
+        hdr_psf = psf_fits[1].header
+        xctr_items = sorted(
+            [(int(k.split("_")[1]), hdr_psf[k])
+             for k in hdr_psf if k.startswith("XCTR_")]
+        )
+        yctr_items = sorted(
+            [(int(k.split("_")[1]), hdr_psf[k])
+             for k in hdr_psf if k.startswith("YCTR_")]
+        )
+        nzone = len(xctr_items)
+        xctrs = np.array([v for _, v in xctr_items])
+        yctrs = np.array([v for _, v in yctr_items])
+        psf_hdrs[ii]['xctrs'] = xctrs
+        psf_hdrs[ii]['yctrs'] = yctrs
+        psf_hdrs[ii]['oversamp'] = hdr_psf["OVERSAMP"]
 
     # Load in solid angle maps
     if args.sapm_path is not None:
@@ -1397,7 +1395,8 @@ def main(argv=None):
             det = image['detector_id']
             result = optimal_extract(
                 image=image,
-                psf_cube_fits=psf_cubes[det-1],
+                psf_cube=psf_cubes[det-1],
+                psf_hdr=psf_hdrs[det-1],
                 name=name,
                 ra=ra,
                 dec=dec,
