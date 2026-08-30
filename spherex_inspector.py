@@ -50,7 +50,7 @@ KEYBINDINGS  (see also the live side-panel in the GUI)
   d                   query NED    (astroquery, prints result + shows match)
   v                   open SIMBAD web page for this position in browser
   w                   open NED web page for this position in browser
-  k                   manually enter RA/Dec (if not found in the CSV)
+  k                   Print RA/Dec to terminal
 
   h                   print full help to the terminal
 """
@@ -408,7 +408,7 @@ class SpherexInspector:
         if k == 'w':
             self.open_ned_browser(); return
         if k == 'k':
-            self._prompt_manual_coords(); return
+            self._print_coords(); return
 
         if k == 'h':
             self.print_help(); return
@@ -457,15 +457,16 @@ class SpherexInspector:
         except ValueError:
             print("Invalid id.")
 
-    def _prompt_manual_coords(self):
-        val = input("Enter RA, Dec in degrees (comma separated): ")
-        try:
-            ra_s, dec_s = val.split(',')
-            self.ra, self.dec = float(ra_s), float(dec_s)
-            print(f"Coordinates set: RA={self.ra}, Dec={self.dec}")
-            self.update_info_panel()
-        except Exception:
-            print("Could not parse coordinates.")
+    def _print_coords(self):
+        print(f"Coordinates: {self.ra} {self.dec}")
+#        val = input("Enter RA, Dec in degrees (comma separated): ")
+#        try:
+#            ra_s, dec_s = val.split(',')
+#            self.ra, self.dec = float(ra_s), float(dec_s)
+#            print(f"Coordinates set: RA={self.ra}, Dec={self.dec}")
+#            self.update_info_panel()
+#        except Exception:
+#            print("Could not parse coordinates.")
 
     # ------------------------------------------------------------------
     # navigation
@@ -517,8 +518,10 @@ class SpherexInspector:
             print("No coordinates available - press 'k' to enter manually.")
             return
         try:
+            simbad = Simbad()
+            simbad.add_votable_fields("rvz_redshift")
             coord = SkyCoord(ra=self.ra * u.deg, dec=self.dec * u.deg)
-            res = Simbad.query_region(coord, radius=self.radius * u.arcsec)
+            res = simbad.query_region(coord, radius=self.radius * u.arcsec)
             if res is None:
                 print(f"SIMBAD: no match within {self.radius} arcsec.")
                 self.last_simbad_match = 'none'
@@ -559,7 +562,7 @@ class SpherexInspector:
             print("No coordinates available - press 'k' to enter manually.")
             return
         url = (f"https://simbad.u-strasbg.fr/simbad/sim-coo?Coord={self.ra}+{self.dec}"
-               f"&Radius=2&Radius.unit=arcmin")
+               f"&Radius=0.1&Radius.unit=arcmin")
         webbrowser.open(url)
 
     def open_ned_browser(self):
@@ -567,7 +570,7 @@ class SpherexInspector:
             print("No coordinates available - press 'k' to enter manually.")
             return
         url = (f"https://ned.ipac.caltech.edu/cgi-bin/objsearch?search_type=Near+Position+Search"
-               f"&in_csys=Equatorial&in_equinox=J2000.0&lon={self.ra}d&lat={self.dec}d&radius=2")
+               f"&in_csys=Equatorial&in_equinox=J2000.0&lon={self.ra}d&lat={self.dec}d&radius=0.1")
         webbrowser.open(url)
 
     # ------------------------------------------------------------------
@@ -604,7 +607,7 @@ class SpherexInspector:
             "c: comment",
             "i/d: SIMBAD/NED query",
             "v/w: open SIMBAD/NED web",
-            "k: manual RA/Dec",
+            "k: print RA/Dec",
             "h: help (console)",
         ]
         self.info_text.set_text("\n".join(lines))
