@@ -247,7 +247,7 @@ def cutout_pixels_to_images(pixels, image_tab, ra, dec, cutout_size, nodup=True)
         try:
             t_beg, t_end, obsid_val = tab_meta[img_id]
         except:
-            print("Image ID not found in image.parquet. Try a 'git pull' or update yourself from flatiron site.")
+            print("Image ID not found in image.parquet. Try a 'git pull' or update yourself from https://sdsc-users.flatironinstitute.org/~chainje/talltable/")
             continue
 
         images.append({
