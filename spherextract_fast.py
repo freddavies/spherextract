@@ -538,6 +538,7 @@ def optimal_extract(image, psf_cube, psf_hdr, name, ra, dec,
                     deblend_list = None, sapm_fits = None,
                     fit_radius_px = 3.0, kappa = 4.0, max_iter = 10,
                     linear_bkg = False, debug = False, show_figs = False,
+                    old_psf = False,
                     save_figs = False, results_dir = None, no_masking = False):
     """
     Run 2D optimal extraction on one SPHEREx cutout image.
@@ -633,14 +634,9 @@ def optimal_extract(image, psf_cube, psf_hdr, name, ra, dec,
         ra += (pm_conv*pm_ra/np.cos(dec*np.pi/180.0))*(mjd_avg_val-ref_epoch)
         dec += pm_conv*pm_dec*(mjd_avg_val-ref_epoch)
 
-    if old_psf:
-        oversamp    = psf_hdr['oversamp']
-        xctrs       = psf_hdr['xctrs']
-        yctrs       = psf_hdr['yctrs']
-    else:
-        oversamp = psf_hdr['OVSMPX'] # Currently X and Y are the same, TODO: add separate x/y oversamp
-        xctrs       = psf_hdr['XCENTER']
-        yctrs       = psf_hdr['YCENTER']
+    oversamp    = psf_hdr['oversamp']
+    xctrs       = psf_hdr['xctrs']
+    yctrs       = psf_hdr['yctrs']
 
     obsid       = image['obsid']
     det_w       = img.shape[1]
@@ -1233,8 +1229,10 @@ def _build_parser():
     # Data file options
     p.add_argument("--image-tab-path", default="spherex_calibs",
                    help="Directory to look for the image.parquet talltable data file.")
-    p.add_argument("--psf-path", default="spherex_calibs/psf",
+    p.add_argument("--psf-path", default="spherex_calibs/epsf",
                    help="Directory to look for oversampled PSF model cubes.")
+    p.add_argument("--old-psf", default=False,
+                   help="Use the old (QR1 + QR2) PSF model. Slower, but better for extended wings.")
     p.add_argument("--sapm-path", default=None,
                    help="Directory to look for solid angle maps. Not used by default.")
 
@@ -1314,30 +1312,43 @@ def main(argv=None):
     image_tab = pyarrow.parquet.read_table(os.path.join(args.image_tab_path,"image.parquet"))
     
     # Load in PSF model cubes and prepare zones
+    
     psf_cubes = [None for ii in range(6)]
     psf_hdrs = [dict({'oversamp':None,'xctrs':[],'yctrs':[]}) for ii in range(6)]
-    for ii in range(len(psf_cubes)):
-        psf_fits = fits.open(os.path.join(args.psf_path,f'average_psf_D{ii+1}_spx_cal-psf-v5-2026-082.fits'))
-        psf_cubes[ii] = psf_fits[1].data
-        hdr_psf = psf_fits[1].header
-        xctr_items = sorted(
-            [(int(k.split("_")[1]), hdr_psf[k])
-             for k in hdr_psf if k.startswith("XCTR_")]
-        )
-        yctr_items = sorted(
-            [(int(k.split("_")[1]), hdr_psf[k])
-             for k in hdr_psf if k.startswith("YCTR_")]
-        )
-        nzone = len(xctr_items)
-        xctrs = np.array([v for _, v in xctr_items])
-        yctrs = np.array([v for _, v in yctr_items])
-        psf_hdrs[ii]['xctrs'] = xctrs
-        psf_hdrs[ii]['yctrs'] = yctrs
-        psf_hdrs[ii]['oversamp'] = hdr_psf["OVERSAMP"]
+    if old_psf:
+        for ii in range(len(psf_cubes)):
+            psf_fits = fits.open(os.path.join(args.psf_path,f'../psf/average_psf_D{ii+1}_spx_cal-psf-v5-2026-082.fits'))
+            psf_cubes[ii] = psf_fits[1].data
+            hdr_psf = psf_fits[1].header
+            xctr_items = sorted(
+                [(int(k.split("_")[1]), hdr_psf[k])
+                 for k in hdr_psf if k.startswith("XCTR_")]
+            )
+            yctr_items = sorted(
+                [(int(k.split("_")[1]), hdr_psf[k])
+                 for k in hdr_psf if k.startswith("YCTR_")]
+            )
+            nzone = len(xctr_items)
+            xctrs = np.array([v for _, v in xctr_items])
+            yctrs = np.array([v for _, v in yctr_items])
+            psf_hdrs[ii]['xctrs'] = xctrs
+            psf_hdrs[ii]['yctrs'] = yctrs
+            psf_hdrs[ii]['oversamp'] = hdr_psf["OVERSAMP"]
+    else:
+        for ii in range(len(psf_cubes)):
+            if ii == 2:
+                psf_fits = fits.open(os.path.join(args.psf_path,f'epsf_D{ii+1}_spx_cal-epsf-v2-2026-191.fits')
+            else:
+                psf_fits = fits.open(os.path.join(args.psf_path,f'epsf_D{ii+1}_spx_cal-epsf-v1-2026-191.fits')
+            psf_cubes[ii] = psf_fits[1].data['EPSF']
+            hdr_psf = psf_fits[1].header
+            psf_hdrs[ii]['xctrs'] = hdr_psf['XCENTER']
+            psf_hdrs[ii]['yctrs'] = hdr_psf['YCENTER']
+            psf_hdrs[ii]['oversamp'] = hdr_psf['OVSAMPX'] # TODO: support different X and Y oversamp, in case it happens later
 
     # Load in solid angle maps
     if args.sapm_path is not None:
-        sapm_images = [fits.open(os.path.join(args.sapm_path,r'solid_angle_pixel_map_D1_spx_cal-sapm-v2-2025-164.fits')) for ii in range(6)]
+        sapm_images = [fits.open(os.path.join(args.sapm_path,f'solid_angle_pixel_map_D{ii+1}_spx_cal-sapm-v3-2026-191.fits')) for ii in range(6)]
     else:
         sapm_images = None
 
