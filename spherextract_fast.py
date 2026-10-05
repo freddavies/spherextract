@@ -46,7 +46,7 @@ from typing import Dict, List, Optional, Any
 
 import numpy as np
 from astropy.io import ascii, fits
-from scipy import ndimage
+from scipy import ndimage, interpolate
 
 import talltable
 import healpy
@@ -398,10 +398,28 @@ def _make_psf_detgrid(psf_img, oversamp, cutout_shape, xcut, ycut):
     return det
     
 def _make_epsf_detgrid(epsf_img, oversamp, cutout_shape, xcut, ycut):
-"""
+    """
     Evaluate the ePSF model on the detector grid.
 
-"""
+    """
+
+    H, W = cutout_shape
+    cy_hr = epsf_img.shape[0] // 2
+    cx_hr = epsf_img.shape[1] // 2
+    
+    canvas = np.zeros((H,W))
+    X,Y = np.indices((H,W)).astype(float) # + 0.5?
+    X -= xcut
+    Y -= ycut
+    X *= oversamp
+    Y *= oversamp
+    
+    interp = interpolate.RegularGridInterpolator((np.arange(epsf_img.shape[0])-cy_hr,np.arange(epsf_img.shape[1])-cx_hr),
+                                                 epsf_img, bounds_error = False, fill_value = 0.0)
+    
+    det = interp((X.flatten(),Y.flatten())).reshape((H,W))
+    
+    return det
 
 
 
@@ -1315,7 +1333,7 @@ def main(argv=None):
     
     psf_cubes = [None for ii in range(6)]
     psf_hdrs = [dict({'oversamp':None,'xctrs':[],'yctrs':[]}) for ii in range(6)]
-    if old_psf:
+    if args.old_psf:
         for ii in range(len(psf_cubes)):
             psf_fits = fits.open(os.path.join(args.psf_path,f'../psf/average_psf_D{ii+1}_spx_cal-psf-v5-2026-082.fits'))
             psf_cubes[ii] = psf_fits[1].data
@@ -1337,14 +1355,14 @@ def main(argv=None):
     else:
         for ii in range(len(psf_cubes)):
             if ii == 2:
-                psf_fits = fits.open(os.path.join(args.psf_path,f'epsf_D{ii+1}_spx_cal-epsf-v2-2026-191.fits')
+                psf_fits = fits.open(os.path.join(args.psf_path,f'epsf_D{ii+1}_spx_cal-epsf-v2-2026-191.fits'))
             else:
-                psf_fits = fits.open(os.path.join(args.psf_path,f'epsf_D{ii+1}_spx_cal-epsf-v1-2026-191.fits')
+                psf_fits = fits.open(os.path.join(args.psf_path,f'epsf_D{ii+1}_spx_cal-epsf-v1-2026-191.fits'))
             psf_cubes[ii] = psf_fits[1].data['EPSF']
             hdr_psf = psf_fits[1].header
-            psf_hdrs[ii]['xctrs'] = hdr_psf['XCENTER']
-            psf_hdrs[ii]['yctrs'] = hdr_psf['YCENTER']
-            psf_hdrs[ii]['oversamp'] = hdr_psf['OVSAMPX'] # TODO: support different X and Y oversamp, in case it happens later
+            psf_hdrs[ii]['xctrs'] = psf_fits[1].data['XCENTER']
+            psf_hdrs[ii]['yctrs'] = psf_fits[1].data['YCENTER']
+            psf_hdrs[ii]['oversamp'] = hdr_psf['OVSMPX'] # TODO: support different X and Y oversamp, in case it happens later
 
     # Load in solid angle maps
     if args.sapm_path is not None:
@@ -1442,6 +1460,7 @@ def main(argv=None):
                 save_figs=args.save_figs,
                 results_dir=args.results_dir,
                 no_masking=args.no_masking,
+                old_psf=args.old_psf,
             )
             if result.wv_um is not None and result.wv_um is not np.nan:
                 all_results.append(result)
