@@ -417,7 +417,7 @@ def _make_epsf_detgrid(epsf_img, oversamp, cutout_shape, xcut, ycut):
     Y = oversamp*(Y-ycut)
 
     interp = interpolate.RegularGridInterpolator((np.arange(epsf_img.shape[0])-(cy_hr),np.arange(epsf_img.shape[1])-(cx_hr)),
-                                                 epsf_img, bounds_error = False, fill_value = 0.0, method='cubic')
+                                                 epsf_img, bounds_error = False, fill_value = 0.0, method='slinear')
     
     det = interp((X.flatten(),Y.flatten())).reshape((H,W))
     
