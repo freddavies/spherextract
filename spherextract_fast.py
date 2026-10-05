@@ -396,6 +396,13 @@ def _make_psf_detgrid(psf_img, oversamp, cutout_shape, xcut, ycut):
     # 4. Flux-conserving block-sum onto detector pixels
     det = shifted.reshape(H, oversamp, W, oversamp).sum(axis=(1, 3))
     return det
+    
+def _make_epsf_detgrid(epsf_img, oversamp, cutout_shape, xcut, ycut):
+"""
+    Evaluate the ePSF model on the detector grid.
+
+"""
+
 
 
 # ---------------------------------------------------------------------------
@@ -626,9 +633,14 @@ def optimal_extract(image, psf_cube, psf_hdr, name, ra, dec,
         ra += (pm_conv*pm_ra/np.cos(dec*np.pi/180.0))*(mjd_avg_val-ref_epoch)
         dec += pm_conv*pm_dec*(mjd_avg_val-ref_epoch)
 
-    oversamp    = psf_hdr['oversamp']
-    xctrs       = psf_hdr['xctrs']
-    yctrs       = psf_hdr['yctrs']
+    if old_psf:
+        oversamp    = psf_hdr['oversamp']
+        xctrs       = psf_hdr['xctrs']
+        yctrs       = psf_hdr['yctrs']
+    else:
+        oversamp = psf_hdr['OVSMPX'] # Currently X and Y are the same, TODO: add separate x/y oversamp
+        xctrs       = psf_hdr['XCENTER']
+        yctrs       = psf_hdr['YCENTER']
 
     obsid       = image['obsid']
     det_w       = img.shape[1]
@@ -756,7 +768,10 @@ def optimal_extract(image, psf_cube, psf_hdr, name, ra, dec,
     # TODO: Reduce size of cutout to fitted area before making PSF model.
     # Currently this PSF construction takes ~90% of the computation time!
     
-    P = _make_psf_detgrid(psf_hr, oversamp, (H, W), xcut, ycut)
+    if old_psf:
+        P = _make_psf_detgrid(psf_hr, oversamp, (H, W), xcut, ycut)
+    else:
+        P = _make_epsf_detgrid(psf_hr, oversamp, (H,W), xcut, ycut)
     if deblend_list is not None:
         P = [P]
         for ii in range(nblend):
