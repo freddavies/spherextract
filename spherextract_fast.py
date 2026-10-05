@@ -400,7 +400,11 @@ def _make_psf_detgrid(psf_img, oversamp, cutout_shape, xcut, ycut):
 def _make_epsf_detgrid(epsf_img, oversamp, cutout_shape, xcut, ycut):
     """
     Evaluate the ePSF model on the detector grid.
-
+    
+    While the original PSF model was pixel-deconvolved, the new PSF model is an "effective" PSF,
+    meaning that it includes the pixel smearing effect. This means we no longer need to block-sum.
+    
+    Instead, we simply interpolate the ePSF(dX,dY) onto the detector grid.
     """
 
     H, W = cutout_shape
@@ -408,14 +412,12 @@ def _make_epsf_detgrid(epsf_img, oversamp, cutout_shape, xcut, ycut):
     cx_hr = epsf_img.shape[1] // 2
     
     canvas = np.zeros((H,W))
-    X,Y = np.indices((H,W)).astype(float) # + 0.5?
-    X -= xcut
-    Y -= ycut
-    X *= oversamp
-    Y *= oversamp
-    
-    interp = interpolate.RegularGridInterpolator((np.arange(epsf_img.shape[0])-cy_hr,np.arange(epsf_img.shape[1])-cx_hr),
-                                                 epsf_img, bounds_error = False, fill_value = 0.0)
+    Y,X = np.indices((H,W)).astype(float)
+    X = oversamp*(X-xcut)
+    Y = oversamp*(Y-ycut)
+
+    interp = interpolate.RegularGridInterpolator((np.arange(epsf_img.shape[0])-(cy_hr),np.arange(epsf_img.shape[1])-(cx_hr)),
+                                                 epsf_img, bounds_error = False, fill_value = 0.0, method='cubic')
     
     det = interp((X.flatten(),Y.flatten())).reshape((H,W))
     
@@ -1250,7 +1252,7 @@ def _build_parser():
     p.add_argument("--psf-path", default="spherex_calibs/epsf",
                    help="Directory to look for oversampled PSF model cubes.")
     p.add_argument("--old-psf", default=False,
-                   help="Use the old (QR1 + QR2) PSF model. Slower, but better for extended wings.")
+                   help="Use the old (QR1 + QR2) PSF model. Slower, but slightly better?")
     p.add_argument("--sapm-path", default=None,
                    help="Directory to look for solid angle maps. Not used by default.")
 
