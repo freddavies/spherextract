@@ -1338,9 +1338,9 @@ def main(argv=None):
     if args.new_psf:
         for ii in range(len(psf_cubes)):
             if ii == 2:
-                psf_fits = fits.open(os.path.join(args.psf_path,f'epsf_D{ii+1}_spx_cal-epsf-v2-2026-191.fits'))
+                psf_fits = fits.open(os.path.join(args.psf_path,f'../epsf/epsf_D{ii+1}_spx_cal-epsf-v2-2026-191.fits'))
             else:
-                psf_fits = fits.open(os.path.join(args.psf_path,f'epsf_D{ii+1}_spx_cal-epsf-v1-2026-191.fits'))
+                psf_fits = fits.open(os.path.join(args.psf_path,f'../epsf/epsf_D{ii+1}_spx_cal-epsf-v1-2026-191.fits'))
             psf_cubes[ii] = psf_fits[1].data['EPSF']
             hdr_psf = psf_fits[1].header
             psf_hdrs[ii]['xctrs'] = psf_fits[1].data['XCENTER']
@@ -1349,7 +1349,7 @@ def main(argv=None):
 
     else:
         for ii in range(len(psf_cubes)):
-            psf_fits = fits.open(os.path.join(args.psf_path,f'../psf/average_psf_D{ii+1}_spx_cal-psf-v5-2026-082.fits'))
+            psf_fits = fits.open(os.path.join(args.psf_path,f'average_psf_D{ii+1}_spx_cal-psf-v5-2026-082.fits'))
             psf_cubes[ii] = psf_fits[1].data
             hdr_psf = psf_fits[1].header
             xctr_items = sorted(
