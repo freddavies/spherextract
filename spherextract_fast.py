@@ -558,7 +558,7 @@ def optimal_extract(image, psf_cube, psf_hdr, name, ra, dec,
                     deblend_list = None, sapm_fits = None,
                     fit_radius_px = 3.0, kappa = 4.0, max_iter = 10,
                     linear_bkg = False, debug = False, show_figs = False,
-                    old_psf = False,
+                    new_psf = False,
                     save_figs = False, results_dir = None, no_masking = False):
     """
     Run 2D optimal extraction on one SPHEREx cutout image.
@@ -784,10 +784,10 @@ def optimal_extract(image, psf_cube, psf_hdr, name, ra, dec,
     # TODO: Reduce size of cutout to fitted area before making PSF model.
     # Currently this PSF construction takes ~90% of the computation time!
     
-    if old_psf:
-        P = _make_psf_detgrid(psf_hr, oversamp, (H, W), xcut, ycut)
-    else:
+    if new_psf:
         P = _make_epsf_detgrid(psf_hr, oversamp, (H,W), xcut, ycut)
+    else:
+        P = _make_psf_detgrid(psf_hr, oversamp, (H, W), xcut, ycut)
     if deblend_list is not None:
         P = [P]
         for ii in range(nblend):
@@ -1249,10 +1249,10 @@ def _build_parser():
     # Data file options
     p.add_argument("--image-tab-path", default="spherex_calibs",
                    help="Directory to look for the image.parquet talltable data file.")
-    p.add_argument("--psf-path", default="spherex_calibs/epsf",
+    p.add_argument("--psf-path", default="spherex_calibs/psf",
                    help="Directory to look for oversampled PSF model cubes.")
-    p.add_argument("--old-psf", default=False,
-                   help="Use the old (QR1 + QR2) PSF model. Slower, but slightly better?")
+    p.add_argument("--new-psf", default=False,
+                   help="Use the new QR3 ePSF model. Faster, maybe better, but goes to smaller radii.")
     p.add_argument("--sapm-path", default=None,
                    help="Directory to look for solid angle maps. Not used by default.")
 
@@ -1335,7 +1335,19 @@ def main(argv=None):
     
     psf_cubes = [None for ii in range(6)]
     psf_hdrs = [dict({'oversamp':None,'xctrs':[],'yctrs':[]}) for ii in range(6)]
-    if args.old_psf:
+    if args.new_psf:
+        for ii in range(len(psf_cubes)):
+            if ii == 2:
+                psf_fits = fits.open(os.path.join(args.psf_path,f'epsf_D{ii+1}_spx_cal-epsf-v2-2026-191.fits'))
+            else:
+                psf_fits = fits.open(os.path.join(args.psf_path,f'epsf_D{ii+1}_spx_cal-epsf-v1-2026-191.fits'))
+            psf_cubes[ii] = psf_fits[1].data['EPSF']
+            hdr_psf = psf_fits[1].header
+            psf_hdrs[ii]['xctrs'] = psf_fits[1].data['XCENTER']
+            psf_hdrs[ii]['yctrs'] = psf_fits[1].data['YCENTER']
+            psf_hdrs[ii]['oversamp'] = hdr_psf['OVSMPX'] # TODO: support different X and Y oversamp, in case it happens later
+
+    else:
         for ii in range(len(psf_cubes)):
             psf_fits = fits.open(os.path.join(args.psf_path,f'../psf/average_psf_D{ii+1}_spx_cal-psf-v5-2026-082.fits'))
             psf_cubes[ii] = psf_fits[1].data
@@ -1354,17 +1366,6 @@ def main(argv=None):
             psf_hdrs[ii]['xctrs'] = xctrs
             psf_hdrs[ii]['yctrs'] = yctrs
             psf_hdrs[ii]['oversamp'] = hdr_psf["OVERSAMP"]
-    else:
-        for ii in range(len(psf_cubes)):
-            if ii == 2:
-                psf_fits = fits.open(os.path.join(args.psf_path,f'epsf_D{ii+1}_spx_cal-epsf-v2-2026-191.fits'))
-            else:
-                psf_fits = fits.open(os.path.join(args.psf_path,f'epsf_D{ii+1}_spx_cal-epsf-v1-2026-191.fits'))
-            psf_cubes[ii] = psf_fits[1].data['EPSF']
-            hdr_psf = psf_fits[1].header
-            psf_hdrs[ii]['xctrs'] = psf_fits[1].data['XCENTER']
-            psf_hdrs[ii]['yctrs'] = psf_fits[1].data['YCENTER']
-            psf_hdrs[ii]['oversamp'] = hdr_psf['OVSMPX'] # TODO: support different X and Y oversamp, in case it happens later
 
     # Load in solid angle maps
     if args.sapm_path is not None:
@@ -1462,7 +1463,7 @@ def main(argv=None):
                 save_figs=args.save_figs,
                 results_dir=args.results_dir,
                 no_masking=args.no_masking,
-                old_psf=args.old_psf,
+                new_psf=args.new_psf,
             )
             if result.wv_um is not None and result.wv_um is not np.nan:
                 all_results.append(result)
