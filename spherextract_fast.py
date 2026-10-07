@@ -1251,7 +1251,7 @@ def _build_parser():
                    help="Directory to look for the image.parquet talltable data file.")
     p.add_argument("--psf-path", default="spherex_calibs/psf",
                    help="Directory to look for oversampled PSF model cubes.")
-    p.add_argument("--new-psf", default=False,
+    p.add_argument("--new-psf", action="store_true",
                    help="Use the new QR3 ePSF model. Faster, maybe better, but goes to smaller radii.")
     p.add_argument("--sapm-path", default=None,
                    help="Directory to look for solid angle maps. Not used by default.")
