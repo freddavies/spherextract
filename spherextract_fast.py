@@ -46,7 +46,7 @@ from typing import Dict, List, Optional, Any
 
 import numpy as np
 from astropy.io import ascii, fits
-from scipy import ndimage
+from scipy import ndimage, interpolate
 
 import talltable
 import healpy
@@ -396,6 +396,33 @@ def _make_psf_detgrid(psf_img, oversamp, cutout_shape, xcut, ycut):
     # 4. Flux-conserving block-sum onto detector pixels
     det = shifted.reshape(H, oversamp, W, oversamp).sum(axis=(1, 3))
     return det
+    
+def _make_epsf_detgrid(epsf_img, oversamp, cutout_shape, xcut, ycut):
+    """
+    Evaluate the ePSF model on the detector grid.
+    
+    While the original PSF model was pixel-deconvolved, the new PSF model is an "effective" PSF,
+    meaning that it includes the pixel smearing effect. This means we no longer need to block-sum.
+    
+    Instead, we simply interpolate the ePSF(dX,dY) onto the detector grid.
+    """
+
+    H, W = cutout_shape
+    cy_hr = epsf_img.shape[0] // 2
+    cx_hr = epsf_img.shape[1] // 2
+    
+    canvas = np.zeros((H,W))
+    Y,X = np.indices((H,W)).astype(float)
+    X = oversamp*(X-xcut)
+    Y = oversamp*(Y-ycut)
+
+    interp = interpolate.RegularGridInterpolator((np.arange(epsf_img.shape[0])-(cy_hr),np.arange(epsf_img.shape[1])-(cx_hr)),
+                                                 epsf_img, bounds_error = False, fill_value = 0.0, method='slinear')
+    
+    det = interp((Y.flatten(),X.flatten())).reshape((H,W))
+    
+    return det
+
 
 
 # ---------------------------------------------------------------------------
@@ -531,6 +558,7 @@ def optimal_extract(image, psf_cube, psf_hdr, name, ra, dec,
                     deblend_list = None, sapm_fits = None,
                     fit_radius_px = 3.0, kappa = 4.0, max_iter = 10,
                     linear_bkg = False, debug = False, show_figs = False,
+                    new_psf = False,
                     save_figs = False, results_dir = None, no_masking = False):
     """
     Run 2D optimal extraction on one SPHEREx cutout image.
@@ -756,7 +784,10 @@ def optimal_extract(image, psf_cube, psf_hdr, name, ra, dec,
     # TODO: Reduce size of cutout to fitted area before making PSF model.
     # Currently this PSF construction takes ~90% of the computation time!
     
-    P = _make_psf_detgrid(psf_hr, oversamp, (H, W), xcut, ycut)
+    if new_psf:
+        P = _make_epsf_detgrid(psf_hr, oversamp, (H,W), xcut, ycut)
+    else:
+        P = _make_psf_detgrid(psf_hr, oversamp, (H, W), xcut, ycut)
     if deblend_list is not None:
         P = [P]
         for ii in range(nblend):
@@ -1220,6 +1251,8 @@ def _build_parser():
                    help="Directory to look for the image.parquet talltable data file.")
     p.add_argument("--psf-path", default="spherex_calibs/psf",
                    help="Directory to look for oversampled PSF model cubes.")
+    p.add_argument("--new-psf", action="store_true",
+                   help="Use the new QR3 ePSF model. Faster, maybe better, but goes to smaller radii.")
     p.add_argument("--sapm-path", default=None,
                    help="Directory to look for solid angle maps. Not used by default.")
 
@@ -1299,30 +1332,44 @@ def main(argv=None):
     image_tab = pyarrow.parquet.read_table(os.path.join(args.image_tab_path,"image.parquet"))
     
     # Load in PSF model cubes and prepare zones
+    
     psf_cubes = [None for ii in range(6)]
     psf_hdrs = [dict({'oversamp':None,'xctrs':[],'yctrs':[]}) for ii in range(6)]
-    for ii in range(len(psf_cubes)):
-        psf_fits = fits.open(os.path.join(args.psf_path,f'average_psf_D{ii+1}_spx_cal-psf-v5-2026-082.fits'))
-        psf_cubes[ii] = psf_fits[1].data
-        hdr_psf = psf_fits[1].header
-        xctr_items = sorted(
-            [(int(k.split("_")[1]), hdr_psf[k])
-             for k in hdr_psf if k.startswith("XCTR_")]
-        )
-        yctr_items = sorted(
-            [(int(k.split("_")[1]), hdr_psf[k])
-             for k in hdr_psf if k.startswith("YCTR_")]
-        )
-        nzone = len(xctr_items)
-        xctrs = np.array([v for _, v in xctr_items])
-        yctrs = np.array([v for _, v in yctr_items])
-        psf_hdrs[ii]['xctrs'] = xctrs
-        psf_hdrs[ii]['yctrs'] = yctrs
-        psf_hdrs[ii]['oversamp'] = hdr_psf["OVERSAMP"]
+    if args.new_psf:
+        for ii in range(len(psf_cubes)):
+            if ii == 2:
+                psf_fits = fits.open(os.path.join(args.psf_path,f'../epsf/epsf_D{ii+1}_spx_cal-epsf-v2-2026-191.fits'))
+            else:
+                psf_fits = fits.open(os.path.join(args.psf_path,f'../epsf/epsf_D{ii+1}_spx_cal-epsf-v1-2026-191.fits'))
+            psf_cubes[ii] = psf_fits[1].data['EPSF']
+            hdr_psf = psf_fits[1].header
+            psf_hdrs[ii]['xctrs'] = psf_fits[1].data['XCENTER']
+            psf_hdrs[ii]['yctrs'] = psf_fits[1].data['YCENTER']
+            psf_hdrs[ii]['oversamp'] = hdr_psf['OVSMPX'] # TODO: support different X and Y oversamp, in case it happens later
+
+    else:
+        for ii in range(len(psf_cubes)):
+            psf_fits = fits.open(os.path.join(args.psf_path,f'average_psf_D{ii+1}_spx_cal-psf-v5-2026-082.fits'))
+            psf_cubes[ii] = psf_fits[1].data
+            hdr_psf = psf_fits[1].header
+            xctr_items = sorted(
+                [(int(k.split("_")[1]), hdr_psf[k])
+                 for k in hdr_psf if k.startswith("XCTR_")]
+            )
+            yctr_items = sorted(
+                [(int(k.split("_")[1]), hdr_psf[k])
+                 for k in hdr_psf if k.startswith("YCTR_")]
+            )
+            nzone = len(xctr_items)
+            xctrs = np.array([v for _, v in xctr_items])
+            yctrs = np.array([v for _, v in yctr_items])
+            psf_hdrs[ii]['xctrs'] = xctrs
+            psf_hdrs[ii]['yctrs'] = yctrs
+            psf_hdrs[ii]['oversamp'] = hdr_psf["OVERSAMP"]
 
     # Load in solid angle maps
     if args.sapm_path is not None:
-        sapm_images = [fits.open(os.path.join(args.sapm_path,r'solid_angle_pixel_map_D1_spx_cal-sapm-v2-2025-164.fits')) for ii in range(6)]
+        sapm_images = [fits.open(os.path.join(args.sapm_path,f'solid_angle_pixel_map_D{ii+1}_spx_cal-sapm-v3-2026-191.fits')) for ii in range(6)]
     else:
         sapm_images = None
 
@@ -1416,6 +1463,7 @@ def main(argv=None):
                 save_figs=args.save_figs,
                 results_dir=args.results_dir,
                 no_masking=args.no_masking,
+                new_psf=args.new_psf,
             )
             if result.wv_um is not None and result.wv_um is not np.nan:
                 all_results.append(result)
