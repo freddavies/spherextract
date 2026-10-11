@@ -399,7 +399,7 @@ def _make_psf_detgrid(psf_img, oversamp, cutout_shape, xcut, ycut):
     
 def _make_epsf_detgrid(epsf_img, oversamp, cutout_shape, xcut, ycut):
     """
-    Evaluate the ePSF model on the detector grid.
+    Evaluate the QR3 ePSF model on the detector grid.
     
     While the original PSF model was pixel-deconvolved, the new PSF model is an "effective" PSF,
     meaning that it includes the pixel smearing effect. This means we no longer need to block-sum.
@@ -408,17 +408,20 @@ def _make_epsf_detgrid(epsf_img, oversamp, cutout_shape, xcut, ycut):
     """
 
     H, W = cutout_shape
-    cy_hr = epsf_img.shape[0] // 2
-    cx_hr = epsf_img.shape[1] // 2
+    cy_hr = epsf_img.shape[0] // 2 # ePSF has dimensions 33x33 for now
+    cx_hr = epsf_img.shape[1] // 2 # this won't work if the dimensions are even in the future.
     
-    canvas = np.zeros((H,W))
+    # Calculate oversampled coordinates of cutout centered on target
     Y,X = np.indices((H,W)).astype(float)
     X = oversamp*(X-xcut)
     Y = oversamp*(Y-ycut)
 
+    # Construct re-centered interpolator for the ePSF
+    # Outside the valid bounds, return zero for the amplitude
     interp = interpolate.RegularGridInterpolator((np.arange(epsf_img.shape[0])-(cy_hr),np.arange(epsf_img.shape[1])-(cx_hr)),
                                                  epsf_img, bounds_error = False, fill_value = 0.0, method='slinear')
     
+    # Evaluate interpolator on the cutout
     det = interp((Y.flatten(),X.flatten())).reshape((H,W))
     
     return det
