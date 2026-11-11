@@ -1227,33 +1227,36 @@ def main(argv=None):
         # ------------------------------------------------------------------
         for fits_path in fits_paths:
             print(f"  Extracting: {os.path.basename(fits_path)}")
-            result = optimal_extract(
-                fits_path=fits_path,
-                name=name,
-                ra=ra,
-                dec=dec,
-                extract_size=(extract_px, extract_px),
-                fit_radius_px=args.fit_radius,
-                kappa=args.kappa,
-                max_iter=args.max_iter,
-                debug=args.debug,
-                show_figs=args.show_figs,
-                save_figs=args.save_figs,
-                results_dir=args.results_dir,
-                no_masking=args.no_masking,
-            )
-            all_results.append(result)
+            try:
+                result = optimal_extract(
+                    fits_path=fits_path,
+                    name=name,
+                    ra=ra,
+                    dec=dec,
+                    extract_size=(extract_px, extract_px),
+                    fit_radius_px=args.fit_radius,
+                    kappa=args.kappa,
+                    max_iter=args.max_iter,
+                    debug=args.debug,
+                    show_figs=args.show_figs,
+                    save_figs=args.save_figs,
+                    results_dir=args.results_dir,
+                    no_masking=args.no_masking,
+                )
+                all_results.append(result)
 
-            # Print compact one-line summary
-            print(
-                f"    λ={result.wv_um or 'N/A':.4f} µm  "
-                f"flux={result.opt_flux_MJysr or 'N/A'} MJy/sr"
-                f"  ({result.opt_flux_uJy or 'N/A'} µJy)"
-                f"  S/N={result.opt_snr or 'N/A':.2f}"
-                f"  n_used={result.n_pix_used}"
-                f"  n_outlier={result.n_pix_outlier}"
-                f"  converged={result.converged}"
-            )
+                # Print compact one-line summary
+                print(
+                    f"    λ={result.wv_um or 'N/A':.4f} µm  "
+                    f"flux={result.opt_flux_MJysr or 'N/A'} MJy/sr"
+                    f"  ({result.opt_flux_uJy or 'N/A'} µJy)"
+                    f"  S/N={result.opt_snr or 'N/A':.2f}"
+                    f"  n_used={result.n_pix_used}"
+                    f"  n_outlier={result.n_pix_outlier}"
+                    f"  converged={result.converged}"
+                )
+            except:
+                print("This script is not ready for QR3. Skipping to the next image.")
 
         # ------------------------------------------------------------------
         # Combined CSV + TXT (always written if there are any results)
